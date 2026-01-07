@@ -1,0 +1,72 @@
+services:
+  # ===== Main API Server =====
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whapvibez-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - API_PREFIX=v1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - whapvibez-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ===== Redis Cache =====
+  redis:
+    image: redis:7-alpine
+    container_name: whapvibez-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - whapvibez-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===== Nginx Reverse Proxy =====
+  nginx:
+    image: nginx:alpine
+    container_name: whapvibez-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - api
+    networks:
+      - whapvibez-network
+
+networks:
+  whapvibez-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+
