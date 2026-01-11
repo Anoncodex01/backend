@@ -104,12 +104,11 @@ export class AgoraService {
     // Pack privilege count
     parts.push(this.packUint16(privileges.size));
     
-    // Pack each privilege: key (uint16) + value (uint32)
-    const sortedKeys = Array.from(privileges.keys()).sort((a, b) => a - b);
-    for (const key of sortedKeys) {
+    // Pack each privilege: key (uint16) + value (uint32) - in insertion order (like Supabase function)
+    privileges.forEach((value, key) => {
       parts.push(this.packUint16(key));
-      parts.push(this.packUint32(privileges.get(key)!));
-    }
+      parts.push(this.packUint32(value));
+    });
     
     return Buffer.concat(parts);
   }
