@@ -14,6 +14,11 @@ class StartLiveDto {
   title?: string;
 }
 
+class LiveTokenDto {
+  channelName: string;
+  isHost: boolean;
+}
+
 @Controller('live')
 export class LiveController {
   constructor(private liveService: LiveService) {}
@@ -45,6 +50,28 @@ export class LiveController {
     const result = await this.liveService.startLiveSession({
       hostId: userId,
       title: dto.title,
+    });
+
+    return {
+      success: true,
+      data: result,
+    };
+  }
+
+  /**
+   * POST /v1/live/token
+   * Generate Agora RTC token for a channel
+   */
+  @Post('token')
+  @UseGuards(AuthGuard)
+  async getToken(
+    @CurrentUser() userId: string,
+    @Body() dto: LiveTokenDto,
+  ) {
+    const result = await this.liveService.generateToken({
+      channelName: dto.channelName,
+      userId,
+      isHost: dto.isHost,
     });
 
     return {

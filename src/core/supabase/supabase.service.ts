@@ -69,6 +69,7 @@ export class SupabaseService implements OnModuleInit {
       .from('posts')
       .select('*')
       .eq('user_id', userId)
+      .eq('is_draft', false) // Exclude drafts - only owner can see their drafts on their own profile
       .order('created_at', { ascending: false });
 
     if (options.isPublic !== undefined) {
@@ -84,7 +85,7 @@ export class SupabaseService implements OnModuleInit {
 
   async getUserStats(userId: string) {
     const [postsResult, followersResult, followingResult] = await Promise.all([
-      this.client.from('posts').select('id', { count: 'exact' }).eq('user_id', userId).eq('is_public', true),
+      this.client.from('posts').select('id', { count: 'exact' }).eq('user_id', userId).eq('is_public', true).eq('is_draft', false),
       this.client.from('follows').select('id', { count: 'exact' }).eq('following_id', userId),
       this.client.from('follows').select('id', { count: 'exact' }).eq('follower_id', userId),
     ]);
@@ -164,6 +165,7 @@ export class SupabaseService implements OnModuleInit {
       .from('posts')
       .select('*')
       .eq('is_public', true)
+      .eq('is_draft', false) // Exclude drafts
       .ilike('caption', `%${query}%`)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -232,6 +234,7 @@ export class SupabaseService implements OnModuleInit {
     let query = this.client
       .from('posts')
       .select('*')
+      .eq('is_draft', false) // Always exclude drafts from public feeds
       .order(options.orderBy || 'created_at', { ascending: false });
 
     if (options.userId) {
@@ -297,6 +300,7 @@ export class SupabaseService implements OnModuleInit {
       .from('posts')
       .select('*')
       .eq('is_public', true)
+      .eq('is_draft', false) // Exclude drafts
       .order('views_count', { ascending: false })
       .order('likes_count', { ascending: false })
       .limit(limit);
@@ -365,6 +369,7 @@ export class SupabaseService implements OnModuleInit {
       .select('*')
       .in('user_id', followingIds)
       .eq('is_public', true)
+      .eq('is_draft', false) // Exclude drafts
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 

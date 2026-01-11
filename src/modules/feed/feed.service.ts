@@ -50,7 +50,7 @@ export class FeedService {
 
       // Cache the result (with error handling)
       try {
-        await this.redisService.setJson(cacheKey, posts, this.feedTtl);
+      await this.redisService.setJson(cacheKey, posts, this.feedTtl);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -93,7 +93,7 @@ export class FeedService {
 
       // Cache for shorter time (personalized content)
       try {
-        await this.redisService.setJson(cacheKey, posts, 15);
+      await this.redisService.setJson(cacheKey, posts, 15);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -127,7 +127,7 @@ export class FeedService {
     if (!posts) {
       posts = await this.supabaseService.getTrendingPosts(limit);
       try {
-        await this.redisService.setJson(cacheKey, posts, this.trendingTtl);
+      await this.redisService.setJson(cacheKey, posts, this.trendingTtl);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -156,7 +156,7 @@ export class FeedService {
     if (!post) {
       post = await this.supabaseService.getPost(postId);
       try {
-        await this.redisService.setJson(cacheKey, post, 60);
+      await this.redisService.setJson(cacheKey, post, 60);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -199,8 +199,8 @@ export class FeedService {
    */
   async invalidateFeedCache() {
     try {
-      await this.redisService.deletePattern('feed:foryou:*');
-      await this.redisService.deletePattern('feed:trending:*');
+    await this.redisService.deletePattern('feed:foryou:*');
+    await this.redisService.deletePattern('feed:trending:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -211,7 +211,7 @@ export class FeedService {
    */
   async invalidateFollowingFeed(userId: string) {
     try {
-      await this.redisService.deletePattern(`feed:following:${userId}:*`);
+    await this.redisService.deletePattern(`feed:following:${userId}:*`);
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -222,7 +222,7 @@ export class FeedService {
    */
   async invalidatePostCache(postId: string) {
     try {
-      await this.redisService.del(`post:${postId}`);
+    await this.redisService.del(`post:${postId}`);
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -238,20 +238,20 @@ export class FeedService {
   }) {
     const cacheKey = `post:${postId}`;
     try {
-      const cached = await this.redisService.getJson<any>(cacheKey);
+    const cached = await this.redisService.getJson<any>(cacheKey);
 
-      if (cached) {
-        if (updates.likesCount !== undefined) {
-          cached.likes_count = updates.likesCount;
-        }
-        if (updates.commentsCount !== undefined) {
-          cached.comments_count = updates.commentsCount;
-        }
-        if (updates.viewsCount !== undefined) {
-          cached.views_count = updates.viewsCount;
-        }
+    if (cached) {
+      if (updates.likesCount !== undefined) {
+        cached.likes_count = updates.likesCount;
+      }
+      if (updates.commentsCount !== undefined) {
+        cached.comments_count = updates.commentsCount;
+      }
+      if (updates.viewsCount !== undefined) {
+        cached.views_count = updates.viewsCount;
+      }
 
-        await this.redisService.setJson(cacheKey, cached, 60);
+      await this.redisService.setJson(cacheKey, cached, 60);
       }
     } catch (error) {
       console.warn('Redis cache update failed:', error);
@@ -263,15 +263,15 @@ export class FeedService {
    */
   async recordView(postId: string, userId?: string) {
     try {
-      // Increment view counter in Redis
-      const viewKey = `post:${postId}:views`;
-      await this.redisService.incr(viewKey);
+    // Increment view counter in Redis
+    const viewKey = `post:${postId}:views`;
+    await this.redisService.incr(viewKey);
 
-      // If user is logged in, track unique view
-      if (userId) {
-        const uniqueKey = `post:${postId}:unique_viewers`;
-        await this.redisService.sadd(uniqueKey, userId);
-        await this.redisService.expire(uniqueKey, 24 * 60 * 60); // 24 hours
+    // If user is logged in, track unique view
+    if (userId) {
+      const uniqueKey = `post:${postId}:unique_viewers`;
+      await this.redisService.sadd(uniqueKey, userId);
+      await this.redisService.expire(uniqueKey, 24 * 60 * 60); // 24 hours
       }
     } catch (error) {
       console.warn('Redis view tracking failed:', error);

@@ -172,6 +172,31 @@ export class LiveService {
   }
 
   /**
+   * Generate Agora RTC token for a channel
+   */
+  async generateToken(data: {
+    channelName: string;
+    userId: string;
+    isHost: boolean;
+  }) {
+    const role = data.isHost ? 'publisher' : 'subscriber';
+    const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
+
+    const token = this.agoraService.generateRtcToken(
+      data.channelName,
+      data.userId,
+      role,
+      expirationSeconds,
+    );
+
+    return {
+      token,
+      appId: this.agoraService.getAppId(),
+      channelName: data.channelName,
+    };
+  }
+
+  /**
    * Sync counters to database (call periodically)
    */
   async syncCountersToDatabase(sessionId: string) {

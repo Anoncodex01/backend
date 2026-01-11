@@ -41,7 +41,7 @@ export class UsersService {
       // Cache the result (with error handling)
       if (profile) {
         try {
-          await this.redisService.setJson(cacheKey, profile, this.profileTtl);
+        await this.redisService.setJson(cacheKey, profile, this.profileTtl);
         } catch (error) {
           console.warn('Redis cache write failed, continuing without cache:', error);
         }
@@ -87,9 +87,9 @@ export class UsersService {
         const newUserId = user.id as string;
         // Cache username -> userId mapping (with error handling)
         try {
-          await this.redisService.set(cacheKey, newUserId, this.profileTtl);
-          // Also cache the profile
-          await this.redisService.setJson(`user:profile:${newUserId}`, user, this.profileTtl);
+        await this.redisService.set(cacheKey, newUserId, this.profileTtl);
+        // Also cache the profile
+        await this.redisService.setJson(`user:profile:${newUserId}`, user, this.profileTtl);
         } catch (error) {
           console.warn('Redis cache write failed, continuing without cache:', error);
         }
@@ -117,7 +117,7 @@ export class UsersService {
     if (!stats) {
       stats = await this.supabaseService.getUserStats(userId);
       try {
-        await this.redisService.setJson(cacheKey, stats, this.statsTtl);
+      await this.redisService.setJson(cacheKey, stats, this.statsTtl);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -156,7 +156,7 @@ export class UsersService {
       
       // Cache for 2 minutes (posts update more frequently)
       try {
-        await this.redisService.setJson(cacheKey, posts, 120);
+      await this.redisService.setJson(cacheKey, posts, 120);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -184,7 +184,7 @@ export class UsersService {
 
     const isFollowing = await this.supabaseService.isFollowing(followerId, followingId);
     try {
-      await this.redisService.set(cacheKey, isFollowing ? 'true' : 'false', 300);
+    await this.redisService.set(cacheKey, isFollowing ? 'true' : 'false', 300);
     } catch (error) {
       console.warn('Redis cache write failed, continuing without cache:', error);
     }
@@ -208,7 +208,7 @@ export class UsersService {
     if (!followers) {
       followers = await this.supabaseService.getFollowers(userId, limit, offset);
       try {
-        await this.redisService.setJson(cacheKey, followers, 120);
+      await this.redisService.setJson(cacheKey, followers, 120);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -233,7 +233,7 @@ export class UsersService {
     if (!following) {
       following = await this.supabaseService.getFollowing(userId, limit, offset);
       try {
-        await this.redisService.setJson(cacheKey, following, 120);
+      await this.redisService.setJson(cacheKey, following, 120);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }
@@ -247,9 +247,9 @@ export class UsersService {
    */
   async invalidateProfile(userId: string) {
     try {
-      await this.redisService.del(`user:profile:${userId}`);
-      await this.redisService.del(`user:stats:${userId}`);
-      await this.redisService.deletePattern(`user:posts:${userId}:*`);
+    await this.redisService.del(`user:profile:${userId}`);
+    await this.redisService.del(`user:stats:${userId}`);
+    await this.redisService.deletePattern(`user:posts:${userId}:*`);
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -260,11 +260,11 @@ export class UsersService {
    */
   async invalidateFollowCache(followerId: string, followingId: string) {
     try {
-      await this.redisService.del(`follow:${followerId}:${followingId}`);
-      await this.redisService.del(`user:stats:${followerId}`);
-      await this.redisService.del(`user:stats:${followingId}`);
-      await this.redisService.deletePattern(`user:followers:${followingId}:*`);
-      await this.redisService.deletePattern(`user:following:${followerId}:*`);
+    await this.redisService.del(`follow:${followerId}:${followingId}`);
+    await this.redisService.del(`user:stats:${followerId}`);
+    await this.redisService.del(`user:stats:${followingId}`);
+    await this.redisService.deletePattern(`user:followers:${followingId}:*`);
+    await this.redisService.deletePattern(`user:following:${followerId}:*`);
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
