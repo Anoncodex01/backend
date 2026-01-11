@@ -96,6 +96,9 @@ export class AgoraService {
     const expire = 0; // 0 means use privilege timestamps
     buffers.push(this.packUint32(expire));
 
+    // Pack appId (CRITICAL: must be included in token content)
+    buffers.push(this.packString(appId));
+
     // Pack services
     const services: Buffer[] = [];
 
