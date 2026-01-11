@@ -6,16 +6,22 @@ import {
   Body,
   UseGuards,
 } from '@nestjs/common';
+import { IsString, IsBoolean, IsOptional } from 'class-validator';
 import { LiveService } from './live.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 class StartLiveDto {
+  @IsOptional()
+  @IsString()
   title?: string;
 }
 
 class LiveTokenDto {
+  @IsString()
   channelName: string;
+  
+  @IsBoolean()
   isHost: boolean;
 }
 
