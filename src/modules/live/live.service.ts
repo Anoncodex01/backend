@@ -182,9 +182,10 @@ export class LiveService {
     const role = data.isHost ? 'publisher' : 'subscriber';
     const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
 
+    // Use uid 0 to match Flutter app (which uses uid: 0 to let Agora assign UID automatically)
     const token = this.agoraService.generateRtcToken(
       data.channelName,
-      data.userId,
+      0, // Use 0 to match Flutter app's joinChannel call
       role,
       expirationSeconds,
     );
