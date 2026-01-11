@@ -21,7 +21,7 @@ export class AgoraService {
   }
 
   /**
-   * Generate Agora RTC token
+   * Generate Agora RTC token using AccessToken2 format
    */
   generateRtcToken(
     channelName: string,
@@ -29,118 +29,55 @@ export class AgoraService {
     role: 'publisher' | 'subscriber' = 'subscriber',
     expirationSeconds: number = 3600,
   ): string {
-    const currentTimestamp = Math.floor(Date.now() / 1000);
-    const privilegeExpiredTs = currentTimestamp + expirationSeconds;
+    const version = '007';
+    const ts = Math.floor(Date.now() / 1000);
+    const salt = crypto.randomInt(0, 0xFFFFFFFF);
+    const privilegeExpiredTs = ts + expirationSeconds;
 
-    // Build token
-    const tokenVersion = '007';
-    const uidStr = typeof uid === 'number' ? uid.toString() : uid;
-
-    // Create privileges map
-    const privileges: Record<number, number> = {};
-    privileges[Privileges.kJoinChannel] = privilegeExpiredTs;
+    // Build privileges map
+    const privileges = new Map<number, number>();
+    privileges.set(Privileges.kJoinChannel, privilegeExpiredTs);
 
     if (role === 'publisher') {
-      privileges[Privileges.kPublishAudioStream] = privilegeExpiredTs;
-      privileges[Privileges.kPublishVideoStream] = privilegeExpiredTs;
-      privileges[Privileges.kPublishDataStream] = privilegeExpiredTs;
+      privileges.set(Privileges.kPublishAudioStream, privilegeExpiredTs);
+      privileges.set(Privileges.kPublishVideoStream, privilegeExpiredTs);
+      privileges.set(Privileges.kPublishDataStream, privilegeExpiredTs);
     }
 
-    // Generate token using AccessToken2 algorithm
-    const token = this.buildToken(
-      this.appId,
-      this.appCertificate,
-      channelName,
-      uidStr,
-      privileges,
-      currentTimestamp,
-      privilegeExpiredTs,
-    );
+    // Build message: salt + ts + privileges
+    const messageParts: Buffer[] = [];
+    messageParts.push(this.packUint32(salt));
+    messageParts.push(this.packUint32(ts));
+    messageParts.push(this.packPrivileges(privileges));
 
-    return token;
-  }
+    const message = Buffer.concat(messageParts);
 
-  private buildToken(
-    appId: string,
-    appCertificate: string,
-    channelName: string,
-    uid: string,
-    privileges: Record<number, number>,
-    issueTs: number,
-    expireTs: number,
-  ): string {
-    const m = this.packContent(issueTs, appId, channelName, uid, privileges);
-    const signature = this.sign(appCertificate, m);
-    const content = Buffer.concat([signature, m]);
-    
-    return '007' + Buffer.from(content).toString('base64');
-  }
+    // Generate signature: HMAC-SHA256(appCertificate, appId + channelName + uid + message)
+    const uidStr = uid === 0 ? '' : uid.toString();
+    const toSign = Buffer.concat([
+      Buffer.from(this.appId, 'utf8'),
+      Buffer.from(channelName, 'utf8'),
+      Buffer.from(uidStr, 'utf8'),
+      message,
+    ]);
 
-  private packContent(
-    issueTs: number,
-    appId: string,
-    channelName: string,
-    uid: string,
-    privileges: Record<number, number>,
-  ): Buffer {
-    const buffers: Buffer[] = [];
+    const signature = crypto
+      .createHmac('sha256', this.appCertificate)
+      .update(toSign)
+      .digest();
 
-    // Pack issue timestamp
-    buffers.push(this.packUint32(issueTs));
+    // Build content: appId + signature_length + signature + message_length + message
+    const contentParts: Buffer[] = [];
+    contentParts.push(this.packString(this.appId));
+    contentParts.push(this.packUint16(signature.length));
+    contentParts.push(signature);
+    contentParts.push(this.packUint16(message.length));
+    contentParts.push(message);
 
-    // Pack salt (random)
-    const salt = crypto.randomInt(0, 0xFFFFFFFF);
-    buffers.push(this.packUint32(salt));
+    const content = Buffer.concat(contentParts);
 
-    // Pack expire timestamp
-    const expire = 0; // 0 means use privilege timestamps
-    buffers.push(this.packUint32(expire));
-
-    // Pack appId (CRITICAL: must be included in token content)
-    buffers.push(this.packString(appId));
-
-    // Pack services
-    const services: Buffer[] = [];
-
-    // Service type 1: RTC
-    const rtcService = this.packRtcService(channelName, uid, privileges);
-    services.push(rtcService);
-
-    // Pack service count and services
-    buffers.push(this.packUint16(services.length));
-    services.forEach(s => buffers.push(s));
-
-    return Buffer.concat(buffers);
-  }
-
-  private packRtcService(channelName: string, uid: string, privileges: Record<number, number>): Buffer {
-    const buffers: Buffer[] = [];
-
-    // Service type
-    buffers.push(this.packUint16(1)); // RTC = 1
-
-    // Pack privileges
-    const privEntries = Object.entries(privileges);
-    buffers.push(this.packUint16(privEntries.length));
-    
-    for (const [priv, expire] of privEntries) {
-      buffers.push(this.packUint16(parseInt(priv)));
-      buffers.push(this.packUint32(expire));
-    }
-
-    // Channel name
-    buffers.push(this.packString(channelName));
-
-    // UID
-    buffers.push(this.packString(uid));
-
-    return Buffer.concat(buffers);
-  }
-
-  private sign(certificate: string, content: Buffer): Buffer {
-    const hmac = crypto.createHmac('sha256', certificate);
-    hmac.update(content);
-    return hmac.digest();
+    // Return: version + base64(content)
+    return version + content.toString('base64');
   }
 
   private packUint16(value: number): Buffer {
@@ -156,13 +93,28 @@ export class AgoraService {
   }
 
   private packString(str: string): Buffer {
-    const strBuf = Buffer.from(str, 'utf-8');
+    const strBuf = Buffer.from(str, 'utf8');
     const lenBuf = this.packUint16(strBuf.length);
     return Buffer.concat([lenBuf, strBuf]);
+  }
+
+  private packPrivileges(privileges: Map<number, number>): Buffer {
+    const parts: Buffer[] = [];
+    
+    // Pack privilege count
+    parts.push(this.packUint16(privileges.size));
+    
+    // Pack each privilege: key (uint16) + value (uint32)
+    const sortedKeys = Array.from(privileges.keys()).sort((a, b) => a - b);
+    for (const key of sortedKeys) {
+      parts.push(this.packUint16(key));
+      parts.push(this.packUint32(privileges.get(key)!));
+    }
+    
+    return Buffer.concat(parts);
   }
 
   getAppId(): string {
     return this.appId;
   }
 }
-
