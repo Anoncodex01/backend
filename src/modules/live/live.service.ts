@@ -179,22 +179,29 @@ export class LiveService {
     userId: string;
     isHost: boolean;
   }) {
-    const role = data.isHost ? 'publisher' : 'subscriber';
-    const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
+    try {
+      const role = data.isHost ? 'publisher' : 'subscriber';
+      const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
 
-    // Use uid 0 to match Flutter app (which uses uid: 0 to let Agora assign UID automatically)
-    const token = this.agoraService.generateRtcToken(
-      data.channelName,
-      0, // Use 0 to match Flutter app's joinChannel call
-      role,
-      expirationSeconds,
-    );
+      // Use uid 0 to match Flutter app (which uses uid: 0 to let Agora assign UID automatically)
+      const token = this.agoraService.generateRtcToken(
+        data.channelName,
+        0, // Use 0 to match Flutter app's joinChannel call
+        role,
+        expirationSeconds,
+      );
 
-    return {
-      token,
-      appId: this.agoraService.getAppId(),
-      channelName: data.channelName,
-    };
+      console.log(`✅ Token generated successfully for channel: ${data.channelName}, isHost: ${data.isHost}, token length: ${token.length}`);
+
+      return {
+        token,
+        appId: this.agoraService.getAppId(),
+        channelName: data.channelName,
+      };
+    } catch (error) {
+      console.error(`❌ Error generating token: ${error}`);
+      throw error;
+    }
   }
 
   /**
