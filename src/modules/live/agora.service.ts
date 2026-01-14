@@ -1,14 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as crypto from 'crypto';
-
-// Agora RTC Token Privileges
-const Privileges = {
-  kJoinChannel: 1,
-  kPublishAudioStream: 2,
-  kPublishVideoStream: 3,
-  kPublishDataStream: 4,
-};
+const { RtcTokenBuilder, RtcRole } = require('agora-token');
 
 @Injectable()
 export class AgoraService {
@@ -42,7 +34,7 @@ export class AgoraService {
   }
 
   /**
-   * Generate Agora RTC token using AccessToken2 format
+   * Generate Agora RTC token using official Agora token library
    */
   generateRtcToken(
     channelName: string,
@@ -61,92 +53,32 @@ export class AgoraService {
       throw new Error('Channel name is required');
     }
 
-    const version = '007';
-    const ts = Math.floor(Date.now() / 1000);
-    // Use Math.random for better compatibility (randomInt might not be available in older Node versions)
-    const salt = Math.floor(Math.random() * 0xFFFFFFFF);
-    const privilegeExpiredTs = ts + expirationSeconds;
+    try {
+      // Normalize uid - convert string to number, use 0 if invalid (0 means Agora assigns UID)
+      const numericUid = typeof uid === 'string' ? (parseInt(uid) || 0) : (uid || 0);
 
-    // Normalize uid - convert string to number, use 0 if invalid (0 means Agora assigns UID)
-    const numericUid = typeof uid === 'string' ? (parseInt(uid) || 0) : (uid || 0);
+      // Map role to RtcRole enum
+      const rtcRole = role === 'publisher' ? RtcRole.PUBLISHER : RtcRole.SUBSCRIBER;
 
-    // Build privileges map - ORDER MATTERS (Map maintains insertion order)
-    const privileges = new Map<number, number>();
-    privileges.set(Privileges.kJoinChannel, privilegeExpiredTs);
+      // Generate token using official Agora library
+      // Parameters are durations in seconds (not absolute timestamps)
+      const token = RtcTokenBuilder.buildTokenWithUid(
+        this.appId,
+        this.appCertificate,
+        channelName,
+        numericUid,
+        rtcRole,
+        expirationSeconds, // tokenExpire: duration in seconds
+        expirationSeconds, // privilegeExpire: duration in seconds
+      );
 
-    if (role === 'publisher') {
-      privileges.set(Privileges.kPublishAudioStream, privilegeExpiredTs);
-      privileges.set(Privileges.kPublishVideoStream, privilegeExpiredTs);
-      privileges.set(Privileges.kPublishDataStream, privilegeExpiredTs);
+      console.log(`✅ Generated token using official Agora library - channel: ${channelName}, uid: ${numericUid}, role: ${role}, expires: ${expirationSeconds}s, tokenLength: ${token.length}`);
+      
+      return token;
+    } catch (error) {
+      console.error(`❌ Error generating token with official library: ${error}`);
+      throw error;
     }
-
-    // Build message: salt (uint32) + ts (uint32) + privileges
-    const saltBuf = this.packUint32(salt);
-    const tsBuf = this.packUint32(ts);
-    const privilegesBuf = this.packPrivileges(privileges);
-    const message = Buffer.concat([saltBuf, tsBuf, privilegesBuf]);
-
-    // Generate signature: HMAC-SHA256(appCertificate, appId + channelName + uid + message)
-    // For uid 0, use empty string in signature calculation (per Agora spec)
-    const uidStr = numericUid === 0 ? '' : numericUid.toString();
-    
-    // Concatenate strings first, then encode (matches Agora spec exactly)
-    const signString = this.appId + channelName + uidStr;
-    const signBuf = Buffer.from(signString, 'utf8');
-    const toSign = Buffer.concat([signBuf, message]);
-
-    const signature = crypto
-      .createHmac('sha256', this.appCertificate)
-      .update(toSign)
-      .digest();
-
-    // Build content: appId (string) + signature_length (uint16) + signature + message_length (uint16) + message
-    const appIdBuf = this.packString(this.appId);
-    const sigLenBuf = this.packUint16(signature.length);
-    const msgLenBuf = this.packUint16(message.length);
-    const content = Buffer.concat([appIdBuf, sigLenBuf, signature, msgLenBuf, message]);
-
-    // Return: version (007) + base64(content)
-    const token = version + content.toString('base64');
-    
-    console.log(`✅ Generated token for channel: ${channelName}, uid: ${numericUid}, role: ${role}, expires: ${expirationSeconds}s, tokenLength: ${token.length}`);
-    
-    return token;
-  }
-
-  private packUint16(value: number): Buffer {
-    const buf = Buffer.alloc(2);
-    buf.writeUInt16LE(value);
-    return buf;
-  }
-
-  private packUint32(value: number): Buffer {
-    const buf = Buffer.alloc(4);
-    buf.writeUInt32LE(value);
-    return buf;
-  }
-
-  private packString(str: string): Buffer {
-    const strBuf = Buffer.from(str, 'utf8');
-    const lenBuf = this.packUint16(strBuf.length);
-    return Buffer.concat([lenBuf, strBuf]);
-  }
-
-  private packPrivileges(privileges: Map<number, number>): Buffer {
-    const parts: Buffer[] = [];
-    
-    // Pack privilege count
-    parts.push(this.packUint16(privileges.size));
-    
-    // Pack each privilege: key (uint16) + value (uint32)
-    // IMPORTANT: Must iterate in insertion order (Map maintains insertion order in JS/TS)
-    const privilegeEntries = Array.from(privileges.entries());
-    for (const [key, value] of privilegeEntries) {
-      parts.push(this.packUint16(key));
-      parts.push(this.packUint32(value));
-    }
-    
-    return Buffer.concat(parts);
   }
 
   getAppId(): string {
