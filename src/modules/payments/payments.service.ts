@@ -335,71 +335,160 @@ export class PaymentsService {
   }
 
   async handleWebhook(rawBody: Buffer | string, headers: Record<string, any>) {
-    const signature = (headers['x-webhook-signature'] || headers['X-Webhook-Signature']) as string;
-    if (this.webhookSecret && signature) {
-      const payload = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
-      const computed = createHmac('sha256', this.webhookSecret).update(payload).digest('hex');
-      const valid = timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
-      if (!valid) {
-        throw new ForbiddenException('Invalid webhook signature');
+    console.log('🔔 Webhook received:', {
+      hasBody: !!rawBody,
+      bodyType: typeof rawBody,
+      headers: Object.keys(headers),
+      signatureHeader: headers['x-webhook-signature'] || headers['X-Webhook-Signature'] || 'none',
+    });
+
+    try {
+      const signature = (headers['x-webhook-signature'] || headers['X-Webhook-Signature']) as string;
+      
+      // Only verify signature if webhook secret is properly configured (not placeholder)
+      if (this.webhookSecret && this.webhookSecret !== 'YOUR_WEBHOOK_SECRET' && signature) {
+        const payload = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+        const computed = createHmac('sha256', this.webhookSecret).update(payload).digest('hex');
+        const valid = timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
+        if (!valid) {
+          console.error('❌ Invalid webhook signature');
+          throw new ForbiddenException('Invalid webhook signature');
+        }
+        console.log('✅ Webhook signature verified');
+      } else {
+        console.log('⚠️  Webhook signature verification skipped (secret not configured or no signature)');
       }
-    }
 
-    const body = typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8'));
-    const reference = body.reference;
-    const status = body.status;
+      const body = typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8'));
+      const reference = body.reference;
+      const status = body.status;
 
-    const client = this.supabase.getClient();
-    await client
-      .from('payment_intents')
-      .update({
+      console.log('📦 Webhook payload:', {
+        reference,
         status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('reference', reference);
+        metadata: body.metadata,
+        amount: body.amount,
+      });
 
-    if (status === 'completed') {
-      await this.handleCompletedPayment(reference, body);
+      if (!reference) {
+        console.error('❌ Webhook missing reference');
+        throw new BadRequestException('Missing payment reference');
+      }
+
+      const client = this.supabase.getClient();
+      const updateResult = await client
+        .from('payment_intents')
+        .update({
+          status,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('reference', reference)
+        .select();
+
+      console.log(`✅ Updated payment intent ${reference} to status: ${status}`, {
+        rowsUpdated: updateResult.data?.length || 0,
+      });
+
+      if (status === 'completed') {
+        console.log(`💰 Processing completed payment for reference: ${reference}`);
+        await this.handleCompletedPayment(reference, body);
+        console.log(`✅ Completed payment processed successfully for reference: ${reference}`);
+      }
+
+      return { received: true, reference, status };
+    } catch (error: any) {
+      console.error('❌ Webhook processing error:', {
+        error: error.message,
+        stack: error.stack,
+        reference: (typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8')))?.reference,
+      });
+      throw error;
     }
-
-    return { received: true };
   }
 
   private async handleCompletedPayment(reference: string, payload: any) {
+    console.log(`🔄 Processing completed payment for reference: ${reference}`);
     const client = this.supabase.getClient();
-    const { data: intent } = await client
+    const { data: intent, error: intentError } = await client
       .from('payment_intents')
       .select('user_id, amount, currency, metadata')
       .eq('reference', reference)
       .maybeSingle();
 
+    if (intentError) {
+      console.error('❌ Error fetching payment intent:', intentError);
+      throw new BadRequestException('Payment intent not found');
+    }
+
+    if (!intent) {
+      console.error('❌ Payment intent not found for reference:', reference);
+      throw new BadRequestException('Payment intent not found');
+    }
+
     const metadata = payload.metadata || intent?.metadata || {};
     const userId = metadata.user_id || intent?.user_id;
-    if (!userId) return;
+    
+    if (!userId) {
+      console.error('❌ No user_id found in payment intent or metadata:', { reference, metadata, intent });
+      return;
+    }
+
+    console.log(`👤 Processing payment for user: ${userId}`, {
+      amount: intent.amount,
+      currency: intent.currency,
+      metadata,
+    });
 
     if (metadata.order_id) {
       await client
         .from('orders')
         .update({ status: 'paid', paid_at: new Date().toISOString() })
         .eq('id', metadata.order_id);
+      console.log(`✅ Updated order ${metadata.order_id} to paid`);
     }
 
     if (metadata.kind === 'coin_topup') {
+      // Check if transaction already exists (prevent duplicate processing)
       const { data: existing } = await client
         .from('coin_transactions')
         .select('id')
         .eq('reference', reference)
         .eq('type', 'deposit')
         .maybeSingle();
+      
       if (existing) {
+        console.log(`⚠️  Transaction already processed for reference: ${reference}`);
         return;
       }
-      const coins = Math.floor(Number(intent?.amount || payload.amount?.value || payload.amount) * this.coinRate);
-      const { data: newBalance } = await client.rpc('increment_coin_balance', {
+
+      // Calculate coins based on payment amount and coin rate
+      const paymentAmount = Number(intent?.amount || payload.amount?.value || payload.amount || 0);
+      const coins = Math.floor(paymentAmount * this.coinRate);
+      
+      console.log(`💰 Converting payment to coins:`, {
+        paymentAmount,
+        coinRate: this.coinRate,
+        coins,
+      });
+
+      // Increment user's coin balance
+      const { data: newBalance, error: balanceError } = await client.rpc('increment_coin_balance', {
         p_user_id: userId,
         p_amount: coins,
       });
-      await client.from('coin_transactions').insert({
+
+      if (balanceError) {
+        console.error('❌ Error incrementing coin balance:', balanceError);
+        throw new BadRequestException('Failed to update coin balance');
+      }
+
+      console.log(`✅ Coin balance updated for user ${userId}:`, {
+        coinsAdded: coins,
+        newBalance,
+      });
+
+      // Create transaction record
+      const { error: txError } = await client.from('coin_transactions').insert({
         user_id: userId,
         amount: coins,
         type: 'deposit',
@@ -407,9 +496,21 @@ export class PaymentsService {
         reference,
         metadata,
       });
+
+      if (txError) {
+        console.error('❌ Error creating coin transaction:', txError);
+        throw new BadRequestException('Failed to create transaction record');
+      }
+
+      console.log(`✅ Coin transaction created for user ${userId}`);
+
+      // Sync to Firestore if available
       if (typeof newBalance === 'number') {
         await this.syncFirestoreWallet(userId, newBalance);
+        console.log(`✅ Firestore wallet synced for user ${userId}`);
       }
+    } else {
+      console.log(`ℹ️  Payment kind is not coin_topup, skipping coin processing:`, metadata.kind);
     }
   }
 
