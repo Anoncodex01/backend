@@ -7,6 +7,7 @@ import { FirebaseService } from '../../core/firebase/firebase.service';
 import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
 import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
+import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
 
 type SnippeResponse = {
   status: string;
@@ -202,6 +203,134 @@ export class PaymentsService {
         throw new BadRequestException('Not enough coins');
       }
       throw new BadRequestException('Unable to create withdrawal');
+    }
+  }
+
+  async getWalletSummary(userId: string) {
+    const client = this.supabase.getClient();
+    
+    // Ensure wallet exists - create if it doesn't
+    const { data: wallet, error: walletError } = await client
+      .from('coin_wallets')
+      .select('balance')
+      .eq('user_id', userId)
+      .maybeSingle();
+    
+    // If wallet doesn't exist, create it with 0 balance
+    if (!wallet && !walletError) {
+      await client
+        .from('coin_wallets')
+        .insert({ user_id: userId, balance: 0 })
+        .select('balance')
+        .single();
+    }
+    
+    const [{ data: transactions }, { data: withdrawals }] = await Promise.all([
+      client
+        .from('coin_transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(50),
+      client
+        .from('withdrawal_requests')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(20),
+    ]);
+
+    const txList = (transactions as any[]) || [];
+    let income = 0;
+    let spent = 0;
+    let giftIncome = 0;
+    for (const tx of txList) {
+      const amount = Number(tx.amount || 0);
+      if (amount > 0) {
+        income += amount;
+        if (tx.type === 'gift') giftIncome += amount;
+      } else {
+        spent += Math.abs(amount);
+      }
+    }
+
+    // Get the wallet balance (either from existing wallet or 0 if creation failed)
+    const { data: finalWallet } = await client
+      .from('coin_wallets')
+      .select('balance')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    return {
+      balance: Number(finalWallet?.balance || 0),
+      income,
+      giftIncome,
+      spent,
+      transactions: txList,
+      withdrawals: withdrawals || [],
+    };
+  }
+
+  async sendGift(senderId: string, dto: CreateGiftTransferDto) {
+    if (senderId === dto.receiverId) {
+      throw new BadRequestException('Cannot send gift to yourself');
+    }
+    const client = this.supabase.getClient();
+    try {
+      const { data: senderBalance, error } = await client.rpc('decrement_coin_balance', {
+        p_user_id: senderId,
+        p_amount: dto.coinCost,
+      });
+      if (error) {
+        throw error;
+      }
+
+      const { data: receiverBalance } = await client.rpc('increment_coin_balance', {
+        p_user_id: dto.receiverId,
+        p_amount: dto.coinCost,
+      });
+
+      const metadata = {
+        giftName: dto.giftName,
+        giftIcon: dto.giftIcon,
+        liveId: dto.liveId,
+        receiverId: dto.receiverId,
+        senderId,
+      };
+
+      await client.from('coin_transactions').insert([
+        {
+          user_id: senderId,
+          amount: -Math.abs(dto.coinCost),
+          type: 'gift',
+          status: 'completed',
+          metadata: { ...metadata, direction: 'sent' },
+        },
+        {
+          user_id: dto.receiverId,
+          amount: Math.abs(dto.coinCost),
+          type: 'gift',
+          status: 'completed',
+          metadata: { ...metadata, direction: 'received' },
+        },
+      ]);
+
+      if (typeof senderBalance === 'number') {
+        await this.syncFirestoreWallet(senderId, senderBalance);
+      }
+      if (typeof receiverBalance === 'number') {
+        await this.syncFirestoreWallet(dto.receiverId, receiverBalance);
+      }
+
+      return {
+        senderBalance,
+        receiverBalance,
+      };
+    } catch (e: any) {
+      if ((e?.message || '').includes('insufficient_balance')) {
+        throw new BadRequestException('Not enough coins');
+      }
+      throw new BadRequestException('Unable to send gift');
     }
   }
 
