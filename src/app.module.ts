@@ -19,6 +19,7 @@ import { UsersModule } from './modules/users/users.module';
 import { SearchModule } from './modules/search/search.module';
 import { CommunitiesModule } from './modules/communities/communities.module';
 import { CommentsModule } from './modules/comments/comments.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
@@ -56,6 +57,7 @@ import { HealthController } from './health.controller';
     SearchModule,
     CommunitiesModule,
     CommentsModule,
+    PaymentsModule,
   ],
   controllers: [HealthController],
   providers: [RealtimeGateway],

@@ -82,6 +82,17 @@ export const environment = {
     fromEmail: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || '',
     fromName: process.env.SMTP_FROM_NAME || 'WhapVibez',
   },
+
+  // Payments (Snippe)
+  snippe: {
+    apiUrl: process.env.SNIPPE_API_URL || 'https://api.snippe.sh/api/v1',
+    apiKey: process.env.SNIPPE_API_KEY || '',
+    webhookUrl: process.env.SNIPPE_WEBHOOK_URL || '',
+    webhookSecret: process.env.SNIPPE_WEBHOOK_SECRET || '',
+  },
+
+  // Coin conversion rate (coins per 1 currency unit)
+  coinRate: Number(process.env.COIN_RATE || '1'),
 };
 
 export type Environment = typeof environment;

@@ -3,6 +3,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import * as compression from 'compression';
+import * as bodyParser from 'body-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -13,11 +14,28 @@ async function bootstrap() {
   app.use(helmet());
   app.use(compression());
 
+  // Capture raw body for webhook signature verification
+  app.use(
+    bodyParser.json({
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
+
   // CORS
   app.enableCors({
     origin: configService.get('CORS_ORIGIN', '*'),
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Request-ID',
+      'Idempotency-Key',
+      'X-Webhook-Event',
+      'X-Webhook-Timestamp',
+      'X-Webhook-Signature',
+    ],
     credentials: true,
   });
 
