@@ -81,19 +81,43 @@ export class PaymentsService {
     };
 
     const response = await this.postToSnippe(payload, idempotencyKey);
-    await this.storeIntent({
-      userId,
-      reference: response.data.reference,
-      status: response.data.status,
-      amount: response.data.amount,
-      currency: response.data.currency,
-      paymentType: response.data.payment_type,
-      paymentUrl: response.data.payment_url,
-      expiresAt: response.data.expires_at,
-      idempotencyKey,
-      phoneNumber: dto.phoneNumber,
-      metadata,
-    });
+    
+    // Extract amount - handle both number and object formats
+    const amountValue: any = response.data.amount;
+    const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
+      ? amountValue.value
+      : typeof amountValue === 'number'
+      ? amountValue
+      : Number(amountValue) || 0;
+    
+    // Extract currency - handle both string and object formats
+    const currencyValue: any = response.data.amount;
+    const currency = typeof currencyValue === 'object' && currencyValue !== null && 'currency' in currencyValue
+      ? currencyValue.currency
+      : response.data.currency || 'TZS';
+    
+    try {
+      await this.storeIntent({
+        userId,
+        reference: response.data.reference,
+        status: response.data.status,
+        amount,
+        currency,
+        paymentType: response.data.payment_type,
+        paymentUrl: response.data.payment_url,
+        expiresAt: response.data.expires_at,
+        idempotencyKey,
+        phoneNumber: dto.phoneNumber,
+        metadata,
+      });
+      this.logger.log(`✅ Payment intent stored for reference: ${response.data.reference}`);
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to store payment intent for reference: ${response.data.reference}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      // Don't throw - payment was created, just log the error
+    }
 
     // Check payment status immediately after creation (with small delay for processing)
     setTimeout(async () => {
@@ -146,13 +170,27 @@ export class PaymentsService {
 
     const response = await this.postToSnippe(payload, idempotencyKey);
     
+    // Extract amount - handle both number and object formats
+    const amountValue: any = response.data.amount;
+    const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
+      ? amountValue.value
+      : typeof amountValue === 'number'
+      ? amountValue
+      : Number(amountValue) || 0;
+    
+    // Extract currency - handle both string and object formats
+    const currencyValue: any = response.data.amount;
+    const currency = typeof currencyValue === 'object' && currencyValue !== null && 'currency' in currencyValue
+      ? currencyValue.currency
+      : response.data.currency || 'TZS';
+    
     try {
       await this.storeIntent({
         userId,
         reference: response.data.reference,
         status: response.data.status,
-        amount: response.data.amount,
-        currency: response.data.currency,
+        amount,
+        currency,
         paymentType: response.data.payment_type,
         paymentUrl: response.data.payment_url,
         expiresAt: response.data.expires_at,
