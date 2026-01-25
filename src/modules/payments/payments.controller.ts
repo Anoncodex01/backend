@@ -31,11 +31,6 @@ export class PaymentsController {
     return this.paymentsService.getWalletSummary(userId);
   }
 
-  @Get(':reference')
-  async getStatus(@Param('reference') reference: string) {
-    return this.paymentsService.getPaymentStatus(reference);
-  }
-
   @UseGuards(AuthGuard)
   @Get(':reference/status')
   async getPaymentStatusFromDb(@CurrentUser() userId: string, @Param('reference') reference: string) {
@@ -46,6 +41,11 @@ export class PaymentsController {
   @Post(':reference/check')
   async checkPaymentStatus(@CurrentUser() userId: string, @Param('reference') reference: string) {
     return this.paymentsService.manualCheckPaymentStatus(reference);
+  }
+
+  @Get(':reference')
+  async getStatus(@Param('reference') reference: string) {
+    return this.paymentsService.getPaymentStatus(reference);
   }
 
   @UseGuards(AuthGuard)
