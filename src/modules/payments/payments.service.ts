@@ -145,19 +145,29 @@ export class PaymentsService {
     };
 
     const response = await this.postToSnippe(payload, idempotencyKey);
-    await this.storeIntent({
-      userId,
-      reference: response.data.reference,
-      status: response.data.status,
-      amount: response.data.amount,
-      currency: response.data.currency,
-      paymentType: response.data.payment_type,
-      paymentUrl: response.data.payment_url,
-      expiresAt: response.data.expires_at,
-      idempotencyKey,
-      phoneNumber: dto.phoneNumber,
-      metadata,
-    });
+    
+    try {
+      await this.storeIntent({
+        userId,
+        reference: response.data.reference,
+        status: response.data.status,
+        amount: response.data.amount,
+        currency: response.data.currency,
+        paymentType: response.data.payment_type,
+        paymentUrl: response.data.payment_url,
+        expiresAt: response.data.expires_at,
+        idempotencyKey,
+        phoneNumber: dto.phoneNumber,
+        metadata,
+      });
+      this.logger.log(`✅ Payment intent stored for reference: ${response.data.reference}`);
+    } catch (error: any) {
+      this.logger.error(`❌ Failed to store payment intent for reference: ${response.data.reference}`, {
+        error: error.message,
+        stack: error.stack,
+      });
+      // Don't throw - payment was created, just log the error
+    }
 
     // Check payment status immediately after creation (with small delay for processing)
     setTimeout(async () => {
@@ -579,6 +589,7 @@ export class PaymentsService {
         amount: webhookData.amount?.value || webhookData.amount,
         currency: webhookData.amount?.currency || webhookData.currency,
         metadata: webhookData.metadata,
+        fullWebhookData: JSON.stringify(webhookData, null, 2),
       });
 
       if (!reference) {
@@ -778,7 +789,7 @@ export class PaymentsService {
     metadata?: Record<string, any>;
   }) {
     const client = this.supabase.getClient();
-    await client.from('payment_intents').insert({
+    const { error } = await client.from('payment_intents').insert({
       user_id: data.userId,
       reference: data.reference,
       status: data.status,
@@ -791,6 +802,15 @@ export class PaymentsService {
       phone_number: data.phoneNumber,
       metadata: data.metadata || {},
     });
+    
+    if (error) {
+      this.logger.error(`❌ Error storing payment intent: ${data.reference}`, {
+        error: error.message,
+        code: error.code,
+        details: error.details,
+      });
+      throw error;
+    }
   }
 
   private async syncFirestoreWallet(userId: string, balance: number) {
