@@ -604,7 +604,15 @@ export class PaymentsService {
       // Process based on event type
       if (eventType === 'payment.completed' || status === 'completed') {
         this.logger.log(`💰 Processing completed payment for reference: ${reference}`);
-        await this.handleCompletedPayment(reference, webhookData);
+        // Get the updated payment intent or use webhook data
+        const updatedIntent = updateResult.data?.[0];
+        if (updatedIntent) {
+          await this.handleCompletedPayment(reference, { ...webhookData, ...updatedIntent });
+        } else {
+          // If payment intent not found, try to process with webhook data only
+          this.logger.warn(`⚠️  Payment intent not found in DB, processing with webhook data only for reference: ${reference}`);
+          await this.handleCompletedPayment(reference, webhookData);
+        }
         this.logger.log(`✅ Completed payment processed successfully for reference: ${reference}`);
       } else if (eventType === 'payment.failed' || status === 'failed') {
         this.logger.log(`❌ Payment failed for reference: ${reference}`, {
@@ -626,24 +634,24 @@ export class PaymentsService {
   private async handleCompletedPayment(reference: string, payload: any) {
     this.logger.log(`🔄 Processing completed payment for reference: ${reference}`);
     const client = this.supabase.getClient();
+    
+    // Try to fetch payment intent from database
     const { data: intent, error: intentError } = await client
       .from('payment_intents')
       .select('user_id, amount, currency, metadata')
       .eq('reference', reference)
       .maybeSingle();
 
-    if (intentError) {
-      this.logger.error('❌ Error fetching payment intent:', intentError);
-      throw new BadRequestException('Payment intent not found');
-    }
+    // If not found in DB, use payload data (from webhook or update result)
+    const finalIntent = intent || {
+      user_id: payload.user_id,
+      amount: payload.amount?.value || payload.amount,
+      currency: payload.amount?.currency || payload.currency,
+      metadata: payload.metadata || {},
+    };
 
-    if (!intent) {
-      this.logger.error('❌ Payment intent not found for reference:', reference);
-      throw new BadRequestException('Payment intent not found');
-    }
-
-    const metadata = payload.metadata || intent?.metadata || {};
-    const userId = metadata.user_id || intent?.user_id;
+    const metadata = finalIntent.metadata || payload.metadata || {};
+    const userId = metadata.user_id || finalIntent.user_id || payload.user_id;
     
     if (!userId) {
       this.logger.error('❌ No user_id found in payment intent or metadata:', { reference, metadata, intent });
@@ -651,8 +659,8 @@ export class PaymentsService {
     }
 
     this.logger.log(`👤 Processing payment for user: ${userId}`, {
-      amount: intent.amount,
-      currency: intent.currency,
+      amount: finalIntent.amount,
+      currency: finalIntent.currency,
       metadata,
     });
 
@@ -683,7 +691,7 @@ export class PaymentsService {
       const paymentAmount = Number(
         payload.amount?.value || 
         payload.amount || 
-        intent?.amount || 
+        finalIntent.amount || 
         0
       );
       const coins = Math.floor(paymentAmount * this.coinRate);
