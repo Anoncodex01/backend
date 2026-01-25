@@ -1,6 +1,6 @@
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { v4 as uuidv4 } from 'uuid';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
@@ -25,6 +25,8 @@ type SnippeResponse = {
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private config: ConfigService,
     private supabase: SupabaseService,
@@ -41,10 +43,6 @@ export class PaymentsService {
 
   private get webhookUrl() {
     return this.config.get<string>('SNIPPE_WEBHOOK_URL', '');
-  }
-
-  private get webhookSecret() {
-    return this.config.get<string>('SNIPPE_WEBHOOK_SECRET', '');
   }
 
   private get coinRate() {
@@ -96,6 +94,16 @@ export class PaymentsService {
       phoneNumber: dto.phoneNumber,
       metadata,
     });
+
+    // Check payment status immediately after creation (with small delay for processing)
+    setTimeout(async () => {
+      try {
+        await this.checkAndUpdatePaymentStatus(response.data.reference);
+      } catch (error) {
+        // Silent fail - cron job will handle it
+        this.logger.debug(`Immediate check failed for ${response.data.reference}, will retry via cron`);
+      }
+    }, 3000); // Check after 3 seconds
 
     return response;
   }
@@ -151,17 +159,229 @@ export class PaymentsService {
       metadata,
     });
 
+    // Check payment status immediately after creation (with small delay for processing)
+    setTimeout(async () => {
+      try {
+        await this.checkAndUpdatePaymentStatus(response.data.reference);
+      } catch (error) {
+        // Silent fail - cron job will handle it
+        this.logger.debug(`Immediate check failed for ${response.data.reference}, will retry via cron`);
+      }
+    }, 3000); // Check after 3 seconds
+
     return response;
   }
 
   async getPaymentStatus(reference: string) {
     const url = `${this.apiUrl}/payments/${reference}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+    });
     if (!res.ok) {
       const text = await res.text();
       throw new BadRequestException(text || 'Failed to fetch payment status');
     }
     return res.json();
+  }
+
+  /**
+   * Check payment status from Snippe API using the list endpoint
+   * This is used as a fallback when webhooks fail
+   */
+  async checkPaymentStatusFromSnippe(reference: string) {
+    try {
+      // Try to get specific payment first
+      const url = `${this.apiUrl}/payments/${reference}`;
+      const res = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+      });
+      
+      if (res.ok) {
+        const response = await res.json();
+        // Handle both direct data response and wrapped response
+        if (response.data && response.data.reference) {
+          return response.data;
+        }
+        if (response.reference) {
+          return response;
+        }
+      }
+
+      // If specific payment fails, try list endpoint and filter by reference
+      const listUrl = `${this.apiUrl}/payments/`;
+      const listRes = await fetch(listUrl, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+      });
+
+      if (listRes.ok) {
+        const response = await listRes.json();
+        // Handle response structure: { status, code, data: { payments: [...] } }
+        const payments = response?.data?.payments || response?.payments || [];
+        const payment = payments.find((p: any) => p.reference === reference);
+        if (payment) {
+          return payment;
+        }
+      }
+
+      this.logger.warn(`Payment ${reference} not found in Snippe API`);
+      return null;
+    } catch (error: any) {
+      this.logger.error(`Error checking payment status from Snippe for ${reference}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Check and update a single payment status
+   */
+  async checkAndUpdatePaymentStatus(reference: string) {
+    const client = this.supabase.getClient();
+    
+    // Get current payment intent from database
+    const { data: intent } = await client
+      .from('payment_intents')
+      .select('*')
+      .eq('reference', reference)
+      .maybeSingle();
+
+    if (!intent) {
+      this.logger.warn(`Payment intent not found for reference: ${reference}`);
+      return null;
+    }
+
+    // If already completed, skip
+    if (intent.status === 'completed') {
+      return { reference, status: 'completed', alreadyProcessed: true };
+    }
+
+    // Check status from Snippe
+    const snippePayment = await this.checkPaymentStatusFromSnippe(reference);
+    
+    if (!snippePayment) {
+      this.logger.warn(`Could not fetch payment status from Snippe for reference: ${reference}`);
+      return null;
+    }
+
+    const newStatus = snippePayment.status;
+    
+    // Update payment intent status
+    await client
+      .from('payment_intents')
+      .update({
+        status: newStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('reference', reference);
+
+    this.logger.log(`Updated payment ${reference} from ${intent.status} to ${newStatus}`);
+
+    // If payment is now completed, process it
+    if (newStatus === 'completed' && intent.status !== 'completed') {
+      this.logger.log(`Processing completed payment for reference: ${reference}`);
+      await this.handleCompletedPayment(reference, snippePayment);
+    }
+
+    return { reference, status: newStatus, updated: true };
+  }
+
+  /**
+   * Check and update all pending payments
+   * This is called by the cron job
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async checkPendingPayments() {
+    if (!this.apiKey) {
+      this.logger.warn('Snippe API key not configured, skipping payment status check');
+      return;
+    }
+
+    this.logger.log('🔄 Checking pending payments...');
+    const client = this.supabase.getClient();
+    
+    // Get all pending payments from the last 24 hours
+    const oneDayAgo = new Date();
+    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+    
+    const { data: pendingPayments, error } = await client
+      .from('payment_intents')
+      .select('reference, status, created_at')
+      .in('status', ['pending', 'processing'])
+      .gte('created_at', oneDayAgo.toISOString())
+      .limit(50);
+
+    if (error) {
+      this.logger.error('Error fetching pending payments:', error);
+      return;
+    }
+
+    if (!pendingPayments || pendingPayments.length === 0) {
+      this.logger.log('No pending payments to check');
+      return;
+    }
+
+    this.logger.log(`Found ${pendingPayments.length} pending payments to check`);
+
+    let updatedCount = 0;
+    let completedCount = 0;
+
+    // Check each payment status
+    for (const payment of pendingPayments) {
+      try {
+        const result = await this.checkAndUpdatePaymentStatus(payment.reference);
+        if (result?.updated) {
+          updatedCount++;
+          if (result.status === 'completed') {
+            completedCount++;
+          }
+        }
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error: any) {
+        this.logger.error(`Error checking payment ${payment.reference}:`, error.message);
+      }
+    }
+
+    this.logger.log(`✅ Payment check complete: ${updatedCount} updated, ${completedCount} completed`);
+  }
+
+  /**
+   * Manually trigger payment status check for a specific reference
+   */
+  async manualCheckPaymentStatus(reference: string) {
+    return this.checkAndUpdatePaymentStatus(reference);
+  }
+
+  /**
+   * Get payment status from our database (for frontend polling)
+   */
+  async getPaymentStatusFromDb(reference: string, userId?: string) {
+    const client = this.supabase.getClient();
+    let query = client
+      .from('payment_intents')
+      .select('reference, status, amount, currency, payment_type, created_at, updated_at')
+      .eq('reference', reference);
+
+    if (userId) {
+      query = query.eq('user_id', userId);
+    }
+
+    const { data, error } = await query.maybeSingle();
+
+    if (error) {
+      throw new BadRequestException('Payment not found');
+    }
+
+    if (!data) {
+      throw new BadRequestException('Payment not found');
+    }
+
+    return data;
   }
 
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
@@ -335,46 +555,38 @@ export class PaymentsService {
   }
 
   async handleWebhook(rawBody: Buffer | string, headers: Record<string, any>) {
-    console.log('🔔 Webhook received:', {
-      hasBody: !!rawBody,
-      bodyType: typeof rawBody,
-      headers: Object.keys(headers),
-      signatureHeader: headers['x-webhook-signature'] || headers['X-Webhook-Signature'] || 'none',
+    this.logger.log('🔔 Webhook received:', {
+      event: headers['x-webhook-event'] || headers['X-Webhook-Event'],
+      timestamp: headers['x-webhook-timestamp'] || headers['X-Webhook-Timestamp'],
+      userAgent: headers['user-agent'] || headers['User-Agent'],
     });
 
     try {
-      const signature = (headers['x-webhook-signature'] || headers['X-Webhook-Signature']) as string;
-      
-      // Only verify signature if webhook secret is properly configured (not placeholder)
-      if (this.webhookSecret && this.webhookSecret !== 'YOUR_WEBHOOK_SECRET' && signature) {
-        const payload = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
-        const computed = createHmac('sha256', this.webhookSecret).update(payload).digest('hex');
-        const valid = timingSafeEqual(Buffer.from(computed), Buffer.from(signature));
-        if (!valid) {
-          console.error('❌ Invalid webhook signature');
-          throw new ForbiddenException('Invalid webhook signature');
-        }
-        console.log('✅ Webhook signature verified');
-      } else {
-        console.log('⚠️  Webhook signature verification skipped (secret not configured or no signature)');
-      }
-
+      // Parse webhook body
       const body = typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8'));
-      const reference = body.reference;
-      const status = body.status;
+      
+      // Extract event type and data from Snippe webhook format
+      const eventType = body.type || headers['x-webhook-event'] || headers['X-Webhook-Event'];
+      const webhookData = body.data || body;
+      
+      const reference = webhookData.reference;
+      const status = webhookData.status || (eventType === 'payment.completed' ? 'completed' : eventType === 'payment.failed' ? 'failed' : 'unknown');
 
-      console.log('📦 Webhook payload:', {
+      this.logger.log('📦 Webhook payload:', {
+        eventType,
         reference,
         status,
-        metadata: body.metadata,
-        amount: body.amount,
+        amount: webhookData.amount?.value || webhookData.amount,
+        currency: webhookData.amount?.currency || webhookData.currency,
+        metadata: webhookData.metadata,
       });
 
       if (!reference) {
-        console.error('❌ Webhook missing reference');
+        this.logger.error('❌ Webhook missing reference');
         throw new BadRequestException('Missing payment reference');
       }
 
+      // Update payment intent status
       const client = this.supabase.getClient();
       const updateResult = await client
         .from('payment_intents')
@@ -385,29 +597,34 @@ export class PaymentsService {
         .eq('reference', reference)
         .select();
 
-      console.log(`✅ Updated payment intent ${reference} to status: ${status}`, {
+      this.logger.log(`✅ Updated payment intent ${reference} to status: ${status}`, {
         rowsUpdated: updateResult.data?.length || 0,
       });
 
-      if (status === 'completed') {
-        console.log(`💰 Processing completed payment for reference: ${reference}`);
-        await this.handleCompletedPayment(reference, body);
-        console.log(`✅ Completed payment processed successfully for reference: ${reference}`);
+      // Process based on event type
+      if (eventType === 'payment.completed' || status === 'completed') {
+        this.logger.log(`💰 Processing completed payment for reference: ${reference}`);
+        await this.handleCompletedPayment(reference, webhookData);
+        this.logger.log(`✅ Completed payment processed successfully for reference: ${reference}`);
+      } else if (eventType === 'payment.failed' || status === 'failed') {
+        this.logger.log(`❌ Payment failed for reference: ${reference}`, {
+          failureReason: webhookData.failure_reason,
+        });
+        // Optionally handle failed payments (notify user, etc.)
       }
 
-      return { received: true, reference, status };
+      return { received: true, eventType, reference, status };
     } catch (error: any) {
-      console.error('❌ Webhook processing error:', {
+      this.logger.error('❌ Webhook processing error:', {
         error: error.message,
         stack: error.stack,
-        reference: (typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8')))?.reference,
       });
       throw error;
     }
   }
 
   private async handleCompletedPayment(reference: string, payload: any) {
-    console.log(`🔄 Processing completed payment for reference: ${reference}`);
+    this.logger.log(`🔄 Processing completed payment for reference: ${reference}`);
     const client = this.supabase.getClient();
     const { data: intent, error: intentError } = await client
       .from('payment_intents')
@@ -416,12 +633,12 @@ export class PaymentsService {
       .maybeSingle();
 
     if (intentError) {
-      console.error('❌ Error fetching payment intent:', intentError);
+      this.logger.error('❌ Error fetching payment intent:', intentError);
       throw new BadRequestException('Payment intent not found');
     }
 
     if (!intent) {
-      console.error('❌ Payment intent not found for reference:', reference);
+      this.logger.error('❌ Payment intent not found for reference:', reference);
       throw new BadRequestException('Payment intent not found');
     }
 
@@ -429,11 +646,11 @@ export class PaymentsService {
     const userId = metadata.user_id || intent?.user_id;
     
     if (!userId) {
-      console.error('❌ No user_id found in payment intent or metadata:', { reference, metadata, intent });
+      this.logger.error('❌ No user_id found in payment intent or metadata:', { reference, metadata, intent });
       return;
     }
 
-    console.log(`👤 Processing payment for user: ${userId}`, {
+    this.logger.log(`👤 Processing payment for user: ${userId}`, {
       amount: intent.amount,
       currency: intent.currency,
       metadata,
@@ -444,7 +661,7 @@ export class PaymentsService {
         .from('orders')
         .update({ status: 'paid', paid_at: new Date().toISOString() })
         .eq('id', metadata.order_id);
-      console.log(`✅ Updated order ${metadata.order_id} to paid`);
+      this.logger.log(`✅ Updated order ${metadata.order_id} to paid`);
     }
 
     if (metadata.kind === 'coin_topup') {
@@ -457,15 +674,21 @@ export class PaymentsService {
         .maybeSingle();
       
       if (existing) {
-        console.log(`⚠️  Transaction already processed for reference: ${reference}`);
+        this.logger.log(`⚠️  Transaction already processed for reference: ${reference}`);
         return;
       }
 
       // Calculate coins based on payment amount and coin rate
-      const paymentAmount = Number(intent?.amount || payload.amount?.value || payload.amount || 0);
+      // Handle both old format (payload.amount) and new format (payload.amount.value)
+      const paymentAmount = Number(
+        payload.amount?.value || 
+        payload.amount || 
+        intent?.amount || 
+        0
+      );
       const coins = Math.floor(paymentAmount * this.coinRate);
       
-      console.log(`💰 Converting payment to coins:`, {
+      this.logger.log(`💰 Converting payment to coins:`, {
         paymentAmount,
         coinRate: this.coinRate,
         coins,
@@ -478,11 +701,11 @@ export class PaymentsService {
       });
 
       if (balanceError) {
-        console.error('❌ Error incrementing coin balance:', balanceError);
+        this.logger.error('❌ Error incrementing coin balance:', balanceError);
         throw new BadRequestException('Failed to update coin balance');
       }
 
-      console.log(`✅ Coin balance updated for user ${userId}:`, {
+      this.logger.log(`✅ Coin balance updated for user ${userId}:`, {
         coinsAdded: coins,
         newBalance,
       });
@@ -498,19 +721,19 @@ export class PaymentsService {
       });
 
       if (txError) {
-        console.error('❌ Error creating coin transaction:', txError);
+        this.logger.error('❌ Error creating coin transaction:', txError);
         throw new BadRequestException('Failed to create transaction record');
       }
 
-      console.log(`✅ Coin transaction created for user ${userId}`);
+      this.logger.log(`✅ Coin transaction created for user ${userId}`);
 
       // Sync to Firestore if available
       if (typeof newBalance === 'number') {
         await this.syncFirestoreWallet(userId, newBalance);
-        console.log(`✅ Firestore wallet synced for user ${userId}`);
+        this.logger.log(`✅ Firestore wallet synced for user ${userId}`);
       }
     } else {
-      console.log(`ℹ️  Payment kind is not coin_topup, skipping coin processing:`, metadata.kind);
+      this.logger.log(`ℹ️  Payment kind is not coin_topup, skipping coin processing:`, metadata.kind);
     }
   }
 

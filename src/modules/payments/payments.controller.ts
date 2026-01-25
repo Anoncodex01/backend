@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards, Logger } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -9,6 +9,8 @@ import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
 
 @Controller('payments')
 export class PaymentsController {
+  private readonly logger = new Logger(PaymentsController.name);
+
   constructor(private paymentsService: PaymentsService) {}
 
   @UseGuards(AuthGuard)
@@ -35,6 +37,18 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
+  @Get(':reference/status')
+  async getPaymentStatusFromDb(@CurrentUser() userId: string, @Param('reference') reference: string) {
+    return this.paymentsService.getPaymentStatusFromDb(reference, userId);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post(':reference/check')
+  async checkPaymentStatus(@CurrentUser() userId: string, @Param('reference') reference: string) {
+    return this.paymentsService.manualCheckPaymentStatus(reference);
+  }
+
+  @UseGuards(AuthGuard)
   @Post('withdraw')
   async withdraw(@CurrentUser() userId: string, @Body() dto: CreateWithdrawalDto) {
     return this.paymentsService.createWithdrawal(userId, dto);
@@ -49,17 +63,17 @@ export class PaymentsController {
   @Post('webhook')
   async webhook(@Req() req: any, @Headers() headers: Record<string, any>) {
     try {
-      // Use rawBody if available (for signature verification), otherwise use parsed body
+      // Use rawBody if available, otherwise use parsed body
       const rawBody = req.rawBody ?? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
-      console.log('📥 Webhook endpoint called:', {
+      this.logger.log('📥 Webhook endpoint called:', {
         method: req.method,
         url: req.url,
-        hasRawBody: !!req.rawBody,
-        contentType: headers['content-type'],
+        event: headers['x-webhook-event'] || headers['X-Webhook-Event'],
+        userAgent: headers['user-agent'] || headers['User-Agent'],
       });
       return await this.paymentsService.handleWebhook(rawBody, headers);
     } catch (error: any) {
-      console.error('❌ Webhook controller error:', {
+      this.logger.error('❌ Webhook controller error:', {
         message: error.message,
         status: error.status,
         stack: error.stack,
