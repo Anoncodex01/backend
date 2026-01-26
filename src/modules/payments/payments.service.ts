@@ -54,6 +54,25 @@ export class PaymentsService {
     return Number(this.config.get<string>('COIN_RATE', '1'));
   }
 
+  private async logAdminEvent(params: {
+    level?: 'info' | 'warn' | 'error';
+    category: string;
+    message: string;
+    metadata?: Record<string, any>;
+  }) {
+    try {
+      const client = this.supabase.getClient();
+      await client.from('admin_logs').insert({
+        level: params.level || 'info',
+        category: params.category,
+        message: params.message,
+        metadata: params.metadata || {},
+      });
+    } catch {
+      // Avoid breaking payment flows if logging fails
+    }
+  }
+
   private get smtpHost() {
     return this.config.get<string>('SMTP_HOST', '');
   }
@@ -106,6 +125,11 @@ export class PaymentsService {
     };
 
     const response = await this.postToSnippe(payload, idempotencyKey);
+    await this.logAdminEvent({
+      category: 'payment',
+      message: `Payment intent created (mobile) ${response.data.reference}`,
+      metadata: { userId, amount: dto.amount, currency: dto.currency, kind: dto.kind, orderId: dto.orderId },
+    });
     
     // Extract amount - handle both number and object formats
     const amountValue: any = response.data.amount;
@@ -194,6 +218,11 @@ export class PaymentsService {
     };
 
     const response = await this.postToSnippe(payload, idempotencyKey);
+    await this.logAdminEvent({
+      category: 'payment',
+      message: `Payment intent created (card) ${response.data.reference}`,
+      metadata: { userId, amount: dto.amount, currency: dto.currency, kind: dto.kind, orderId: dto.orderId },
+    });
     
     // Extract amount - handle both number and object formats
     const amountValue: any = response.data.amount;
@@ -381,6 +410,10 @@ export class PaymentsService {
     }
 
     this.logger.log('🔄 Checking pending payments...');
+    await this.logAdminEvent({
+      category: 'cron',
+      message: 'checkPendingPayments',
+    });
     const client = this.supabase.getClient();
     
     // Get all pending payments from the last 24 hours
@@ -436,6 +469,11 @@ export class PaymentsService {
   async expireStalePayments() {
     const client = this.supabase.getClient();
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    await this.logAdminEvent({
+      category: 'cron',
+      message: 'expireStalePayments',
+      metadata: { cutoff },
+    });
     try {
       const { data, error } = await client
         .from('payment_intents')
@@ -473,6 +511,10 @@ export class PaymentsService {
   async reconcilePayments() {
     await this.reconcileFailedPayments();
     await this.reconcileMissingCredits();
+    await this.logAdminEvent({
+      category: 'cron',
+      message: 'reconcilePayments',
+    });
     return { success: true };
   }
 
@@ -626,6 +668,12 @@ export class PaymentsService {
       },
     });
 
+    await this.logAdminEvent({
+      category: 'withdrawal',
+      message: `Shop withdrawal created ${reference}`,
+      metadata: { shopId: shop.id, amount: dto.amount, feeAmount, netAmount, channel: dto.channel },
+    });
+
     return {
       reference,
       status,
@@ -745,6 +793,12 @@ export class PaymentsService {
         },
       ]);
 
+      await this.logAdminEvent({
+        category: 'gift',
+        message: `Gift sent ${dto.giftName || ''}`.trim(),
+        metadata: { senderId, receiverId: dto.receiverId, coinCost: dto.coinCost, liveId: dto.liveId },
+      });
+
       if (typeof senderBalance === 'number') {
         await this.syncFirestoreWallet(senderId, senderBalance);
       }
@@ -757,6 +811,12 @@ export class PaymentsService {
         receiverBalance,
       };
     } catch (e: any) {
+      await this.logAdminEvent({
+        level: 'error',
+        category: 'gift',
+        message: 'Gift transfer failed',
+        metadata: { senderId, receiverId: dto.receiverId, coinCost: dto.coinCost, error: e?.message },
+      });
       if ((e?.message || '').includes('insufficient_balance')) {
         throw new BadRequestException('Not enough coins');
       }
@@ -969,6 +1029,11 @@ export class PaymentsService {
       }
 
       this.logger.log(`✅ Coin transaction created for user ${userId}`);
+      await this.logAdminEvent({
+        category: 'coin',
+        message: `Coin topup completed ${reference}`,
+        metadata: { userId, coins, amount: paymentAmount, orderId: metadata.order_id },
+      });
 
       // Sync to Firestore if available
       if (typeof newBalance === 'number') {
@@ -1087,6 +1152,12 @@ export class PaymentsService {
       amount,
       currency,
       reference,
+    });
+
+    await this.logAdminEvent({
+      category: 'shop_order',
+      message: `Order paid ${order.id}`,
+      metadata: { orderId: order.id, shopId: shop.id, amount, currency },
     });
   }
 
@@ -1207,6 +1278,12 @@ export class PaymentsService {
         }
       }
     }
+    await this.logAdminEvent({
+      level: 'warn',
+      category: 'payment',
+      message: `Payment reversed ${reference}`,
+      metadata: { reference, orderId: metadata.order_id, kind: metadata.kind },
+    });
   }
 
   private async reconcileFailedPayments() {
@@ -1227,6 +1304,11 @@ export class PaymentsService {
           .update({ status: 'completed', updated_at: new Date().toISOString() })
           .eq('reference', p.reference);
         await this.handleCompletedPayment(p.reference, snippe);
+        await this.logAdminEvent({
+          category: 'reconcile',
+          message: `Failed payment reconciled ${p.reference}`,
+          metadata: { reference: p.reference },
+        });
       }
     }
   }
@@ -1252,6 +1334,11 @@ export class PaymentsService {
           .maybeSingle();
         if (!tx) {
           await this.handleCompletedPayment(intent.reference, intent);
+          await this.logAdminEvent({
+            category: 'reconcile',
+            message: `Missing coin credit reconciled ${intent.reference}`,
+            metadata: { reference: intent.reference },
+          });
         }
       }
       if (metadata.order_id) {
@@ -1263,6 +1350,11 @@ export class PaymentsService {
           .maybeSingle();
         if (!stx) {
           await this.handleCompletedPayment(intent.reference, intent);
+          await this.logAdminEvent({
+            category: 'reconcile',
+            message: `Missing shop credit reconciled ${intent.reference}`,
+            metadata: { reference: intent.reference },
+          });
         }
       }
     }

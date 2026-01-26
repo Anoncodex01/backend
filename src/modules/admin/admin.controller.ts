@@ -139,6 +139,57 @@ export class AdminController {
       )
       .join('');
 
+    const orders = (data.recentOrders || [])
+      .map(
+        (o: any) => `
+        <tr>
+          <td>${o.id ? o.id.substring(0, 8).toUpperCase() : '-'}</td>
+          <td>${o.status || '-'}</td>
+          <td>${o.total_amount || 0}</td>
+          <td>${o.created_at || '-'}</td>
+        </tr>
+      `,
+      )
+      .join('');
+
+    const withdrawals = (data.recentWithdrawals || [])
+      .map(
+        (w: any) => `
+        <tr>
+          <td>${w.id ? w.id.substring(0, 8).toUpperCase() : '-'}</td>
+          <td>${w.status || '-'}</td>
+          <td>${w.amount || 0}</td>
+          <td>${w.created_at || '-'}</td>
+        </tr>
+      `,
+      )
+      .join('');
+
+    const logs = (data.recentLogs || [])
+      .map(
+        (l: any) => `
+        <tr>
+          <td>${l.created_at || '-'}</td>
+          <td>${l.level || '-'}</td>
+          <td>${l.category || '-'}</td>
+          <td>${l.message || '-'}</td>
+        </tr>
+      `,
+      )
+      .join('');
+
+    const cronRows = (data.cronJobs || [])
+      .map(
+        (c: any) => `
+        <tr>
+          <td>${c.message || '-'}</td>
+          <td>${c.level || '-'}</td>
+          <td>${c.created_at || '-'}</td>
+        </tr>
+      `,
+      )
+      .join('');
+
     const gifts = (data.recentGifts || [])
       .map(
         (g: any) => `
@@ -161,6 +212,14 @@ export class AdminController {
           <title>Admin Dashboard</title>
           <style>
             body { font-family: Inter, Arial, sans-serif; background:#0b1220; color:#e5e7eb; margin:0; }
+            .layout { display:flex; min-height:100vh; }
+            aside { width:240px; background:#0f172a; border-right:1px solid #1f2937; padding:20px 16px; }
+            .logo { display:flex; align-items:center; gap:10px; margin-bottom:24px; }
+            .logo-badge { width:36px; height:36px; border-radius:10px; background:#2563eb; display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; }
+            nav a { display:flex; gap:10px; align-items:center; padding:10px 12px; border-radius:10px; color:#cbd5f5; text-decoration:none; font-size:13px; margin-bottom:6px; }
+            nav a:hover { background:#1e293b; color:#fff; }
+            nav .muted { color:#64748b; font-size:11px; margin:16px 6px 6px; text-transform:uppercase; }
+            .content { flex:1; }
             header { display:flex; justify-content:space-between; align-items:center; padding:20px 28px; }
             .logout { color:#93c5fd; text-decoration:none; }
             .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:14px; padding:0 28px 20px; }
@@ -174,32 +233,84 @@ export class AdminController {
           </style>
         </head>
         <body>
-          <header>
-            <h1>Admin Dashboard</h1>
-            <a class="logout" href="${logoutUrl}">Logout</a>
-          </header>
-          <section class="grid">
-            ${card('Users', data.usersCount)}
-            ${card('Wallets', data.walletsCount)}
-            ${card('Payments Pending', data.pendingPayments)}
-            ${card('Payments Completed', data.completedPayments)}
-            ${card('Payments Failed', data.failedPayments)}
-            ${card('Withdrawals Pending', data.pendingWithdrawals)}
-          </section>
-          <h2>Recent Payments</h2>
-          <table>
-            <thead>
-              <tr><th>Reference</th><th>Status</th><th>Amount</th><th>Type</th><th>Created</th></tr>
-            </thead>
-            <tbody>${rows || '<tr><td colspan="5">No payments</td></tr>'}</tbody>
-          </table>
-          <h2>Recent Gifts</h2>
-          <table>
-            <thead>
-              <tr><th>User</th><th>Coins</th><th>Gift</th><th>Created</th></tr>
-            </thead>
-            <tbody>${gifts || '<tr><td colspan="4">No gifts</td></tr>'}</tbody>
-          </table>
+          <div class="layout">
+            <aside>
+              <div class="logo">
+                <div class="logo-badge">W</div>
+                <div>
+                  <div style="font-weight:700;">WhapVibez</div>
+                  <div style="font-size:11px; color:#64748b;">Backend Admin</div>
+                </div>
+              </div>
+              <nav>
+                <a href="${this.prefixPath('/admin')}">Dashboard</a>
+                <div class="muted">Sections</div>
+                <a href="#payments">Payments</a>
+                <a href="#orders">Orders</a>
+                <a href="#withdrawals">Withdrawals</a>
+                <a href="#gifts">Gifts</a>
+                <a href="#logs">Logs</a>
+                <a href="#cron">Cron Jobs</a>
+              </nav>
+            </aside>
+            <div class="content">
+              <header>
+                <h1>Admin Dashboard</h1>
+                <a class="logout" href="${logoutUrl}">Logout</a>
+              </header>
+              <section class="grid">
+                ${card('Users', data.usersCount)}
+                ${card('Wallets', data.walletsCount)}
+                ${card('Payments Pending', data.pendingPayments)}
+                ${card('Payments Completed', data.completedPayments)}
+                ${card('Payments Failed', data.failedPayments)}
+                ${card('Withdrawals Pending', data.pendingWithdrawals)}
+                ${card('Orders', data.ordersCount || 0)}
+              </section>
+              <h2 id="payments">Recent Payments</h2>
+              <table>
+                <thead>
+                  <tr><th>Reference</th><th>Status</th><th>Amount</th><th>Type</th><th>Created</th></tr>
+                </thead>
+                <tbody>${rows || '<tr><td colspan="5">No payments</td></tr>'}</tbody>
+              </table>
+              <h2 id="orders">Recent Orders</h2>
+              <table>
+                <thead>
+                  <tr><th>Order</th><th>Status</th><th>Amount</th><th>Created</th></tr>
+                </thead>
+                <tbody>${orders || '<tr><td colspan="4">No orders</td></tr>'}</tbody>
+              </table>
+              <h2 id="withdrawals">Recent Withdrawals</h2>
+              <table>
+                <thead>
+                  <tr><th>Request</th><th>Status</th><th>Amount</th><th>Created</th></tr>
+                </thead>
+                <tbody>${withdrawals || '<tr><td colspan="4">No withdrawals</td></tr>'}</tbody>
+              </table>
+              <h2 id="gifts">Recent Gifts</h2>
+              <table>
+                <thead>
+                  <tr><th>User</th><th>Coins</th><th>Gift</th><th>Created</th></tr>
+                </thead>
+                <tbody>${gifts || '<tr><td colspan="4">No gifts</td></tr>'}</tbody>
+              </table>
+              <h2 id="logs">Recent Logs</h2>
+              <table>
+                <thead>
+                  <tr><th>Created</th><th>Level</th><th>Category</th><th>Message</th></tr>
+                </thead>
+                <tbody>${logs || '<tr><td colspan="4">No logs</td></tr>'}</tbody>
+              </table>
+              <h2 id="cron">Cron Jobs</h2>
+              <table>
+                <thead>
+                  <tr><th>Job</th><th>Level</th><th>Last Run</th></tr>
+                </thead>
+                <tbody>${cronRows || '<tr><td colspan="3">No cron logs</td></tr>'}</tbody>
+              </table>
+            </div>
+          </div>
         </body>
       </html>
     `;
