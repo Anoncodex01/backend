@@ -913,6 +913,9 @@ export class PaymentsService {
       });
     }
 
+    await this._updateSoldCounts(order.id);
+    await this._notifyOrderPaid(order, shop, amount, currency);
+
     await this.sendShopPaymentEmail({
       shopId: shop.id,
       shopName: shop.shop_name,
@@ -922,6 +925,72 @@ export class PaymentsService {
       orderId: order.id,
       reference,
     });
+
+    await this.sendBuyerPaymentEmail({
+      buyerId: order.buyer_id,
+      orderId: order.id,
+      amount,
+      currency,
+      reference,
+    });
+  }
+
+  private async _updateSoldCounts(orderId: string) {
+    const client = this.supabase.getClient();
+    const { data: items } = await client
+      .from('order_items')
+      .select('product_id, quantity')
+      .eq('order_id', orderId);
+
+    for (const item of items || []) {
+      const productId = item.product_id;
+      const qty = Number(item.quantity || 0);
+      if (!productId || qty <= 0) continue;
+      const { data: product } = await client
+        .from('products')
+        .select('sold_count')
+        .eq('id', productId)
+        .maybeSingle();
+      const current = Number(product?.sold_count || 0);
+      await client
+        .from('products')
+        .update({ sold_count: current + qty })
+        .eq('id', productId);
+    }
+  }
+
+  private async _notifyOrderPaid(
+    order: { id: string; buyer_id: string; shop_id: string },
+    shop: { id: string; shop_name?: string; user_id: string },
+    amount: number,
+    currency: string,
+  ) {
+    const client = this.supabase.getClient();
+    const { data: buyer } = await client
+      .from('users')
+      .select('full_name, username')
+      .eq('id', order.buyer_id)
+      .maybeSingle();
+    const buyerName = buyer?.full_name || buyer?.username || 'Customer';
+
+    await client.from('notifications').insert([
+      {
+        user_id: shop.user_id,
+        type: 'shop_order_paid',
+        title: 'New order paid',
+        body: `${buyerName} paid ${currency} ${amount.toFixed(0)} for order #${order.id.substring(0, 8).toUpperCase()}`,
+        data: { order_id: order.id, shop_id: shop.id },
+        is_read: false,
+      },
+      {
+        user_id: order.buyer_id,
+        type: 'shop_order_paid',
+        title: 'Payment received',
+        body: `Payment confirmed for your order #${order.id.substring(0, 8).toUpperCase()}.`,
+        data: { order_id: order.id, shop_id: shop.id },
+        is_read: false,
+      },
+    ]);
   }
 
   private async sendShopPaymentEmail(input: {
@@ -988,6 +1057,70 @@ export class PaymentsService {
       this.logger.log(`📧 Shop payment email sent to ${owner.email}`);
     } catch (e: any) {
       this.logger.error(`❌ Failed to send shop payment email: ${e.message}`);
+    }
+  }
+
+  private async sendBuyerPaymentEmail(input: {
+    buyerId: string;
+    orderId: string;
+    amount: number;
+    currency: string;
+    reference: string;
+  }) {
+    if (!this.smtpHost || !this.smtpUser || !this.smtpPass) {
+      this.logger.debug('SMTP not configured, skipping buyer payment email.');
+      return;
+    }
+
+    const client = this.supabase.getClient();
+    const { data: buyer } = await client
+      .from('users')
+      .select('email, full_name, username')
+      .eq('id', input.buyerId)
+      .maybeSingle();
+
+    if (!buyer?.email) {
+      this.logger.warn(`Buyer email not found for order ${input.orderId}`);
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: this.smtpHost,
+      port: this.smtpPort,
+      secure: this.smtpPort === 465,
+      auth: {
+        user: this.smtpUser,
+        pass: this.smtpPass,
+      },
+    });
+
+    const buyerName = buyer.full_name || buyer.username || 'Customer';
+    const amountText = `${input.currency} ${input.amount.toFixed(0)}`;
+
+    const subject = 'Payment received for your order';
+    const text = [
+      `Hi ${buyerName},`,
+      '',
+      `We received your payment for order ${input.orderId}.`,
+      `Amount: ${amountText}`,
+      `Payment reference: ${input.reference}`,
+      '',
+      'You can track your order status in the app.',
+      '',
+      'Thanks,',
+      'WhapVibez',
+    ].join('\n');
+
+    try {
+      await transporter.sendMail({
+        from: this.smtpFrom,
+        to: buyer.email,
+        subject,
+        text,
+      });
+      this.logger.log(`📧 Buyer payment email sent to ${buyer.email}`);
+    } catch (e: any) {
+      this.logger.error(`❌ Failed to send buyer payment email: ${e.message}`);
     }
   }
 
