@@ -50,6 +50,12 @@ export class PaymentsController {
     return this.paymentsService.manualCheckPaymentStatus(reference);
   }
 
+  @UseGuards(AuthGuard)
+  @Post('reconcile')
+  async reconcilePayments(@CurrentUser() userId: string) {
+    return this.paymentsService.reconcilePayments();
+  }
+
   @Get(':reference')
   async getStatus(@Param('reference') reference: string) {
     return this.paymentsService.getPaymentStatus(reference);

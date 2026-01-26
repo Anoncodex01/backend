@@ -360,6 +360,12 @@ export class PaymentsService {
       await this.handleCompletedPayment(reference, snippePayment);
     }
 
+    // If payment was completed but now failed/reversed, reconcile
+    if (intent.status === 'completed' && ['failed', 'reversed', 'voided', 'expired'].includes(newStatus)) {
+      this.logger.warn(`Payment ${reference} reversed after completion. Reconciling...`);
+      await this.handleReversedPayment(reference, intent, snippePayment);
+    }
+
     return { reference, status: newStatus, updated: true };
   }
 
@@ -424,12 +430,12 @@ export class PaymentsService {
   }
 
   /**
-   * Expire pending payments older than 10 minutes
+   * Expire pending payments older than 1 day
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async expireStalePayments() {
     const client = this.supabase.getClient();
-    const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     try {
       const { data, error } = await client
         .from('payment_intents')
@@ -459,6 +465,15 @@ export class PaymentsService {
    */
   async manualCheckPaymentStatus(reference: string) {
     return this.checkAndUpdatePaymentStatus(reference);
+  }
+
+  /**
+   * Reconcile failed payments that later completed, and missing credits.
+   */
+  async reconcilePayments() {
+    await this.reconcileFailedPayments();
+    await this.reconcileMissingCredits();
+    return { success: true };
   }
 
   /**
@@ -782,8 +797,15 @@ export class PaymentsService {
         throw new BadRequestException('Missing payment reference');
       }
 
-      // Update payment intent status
+      // Read current intent for reconciliation
       const client = this.supabase.getClient();
+      const { data: existingIntent } = await client
+        .from('payment_intents')
+        .select('*')
+        .eq('reference', reference)
+        .maybeSingle();
+
+      // Update payment intent status
       const updateResult = await client
         .from('payment_intents')
         .update({
@@ -810,11 +832,18 @@ export class PaymentsService {
           await this.handleCompletedPayment(reference, webhookData);
         }
         this.logger.log(`✅ Completed payment processed successfully for reference: ${reference}`);
-      } else if (eventType === 'payment.failed' || status === 'failed') {
+      } else if (
+        eventType === 'payment.failed' ||
+        eventType === 'payment.reversed' ||
+        status === 'failed' ||
+        status === 'reversed'
+      ) {
         this.logger.log(`❌ Payment failed for reference: ${reference}`, {
           failureReason: webhookData.failure_reason,
         });
-        // Optionally handle failed payments (notify user, etc.)
+        if (existingIntent?.status === 'completed') {
+          await this.handleReversedPayment(reference, existingIntent, webhookData);
+        }
       }
 
       return { received: true, eventType, reference, status };
@@ -863,7 +892,7 @@ export class PaymentsService {
     if (metadata.order_id) {
       await client
         .from('orders')
-        .update({ status: 'processing', updated_at: new Date().toISOString() })
+        .update({ status: 'processing', updated_at: new Date().toISOString(), payment_issue: false })
         .eq('id', metadata.order_id);
       this.logger.log(`✅ Updated order ${metadata.order_id} to processing`);
     }
@@ -1059,6 +1088,184 @@ export class PaymentsService {
       currency,
       reference,
     });
+  }
+
+  private async handleReversedPayment(reference: string, intent: any, payload: any) {
+    const client = this.supabase.getClient();
+    const metadata = intent?.metadata || payload?.metadata || {};
+    const userId = metadata.user_id || intent.user_id || payload.user_id;
+    const amountValue = payload?.amount?.value || payload?.amount || intent.amount || 0;
+    const paymentAmount = Number(amountValue || 0);
+
+    if (metadata.kind === 'coin_topup' && userId) {
+      const { data: existingAdjustment } = await client
+        .from('coin_transactions')
+        .select('id')
+        .eq('reference', reference)
+        .eq('type', 'adjustment')
+        .maybeSingle();
+
+      if (!existingAdjustment) {
+        const coins = Math.floor(paymentAmount * this.coinRate);
+        try {
+          await client.rpc('decrement_coin_balance', {
+            p_user_id: userId,
+            p_amount: coins,
+          });
+        } catch (e: any) {
+          this.logger.error('❌ Failed to reverse coin balance:', e.message);
+        }
+        await client.from('coin_transactions').insert({
+          user_id: userId,
+          amount: -Math.abs(coins),
+          type: 'adjustment',
+          status: 'completed',
+          reference,
+          metadata: { reason: 'payment_reversed', ...metadata },
+        });
+      }
+    }
+
+    if (metadata.order_id) {
+      await client
+        .from('orders')
+        .update({
+          payment_issue: true,
+          payment_issue_reason: 'payment_reversed',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', metadata.order_id);
+
+      const { data: order } = await client
+        .from('orders')
+        .select('id, shop_id, buyer_id, total_amount')
+        .eq('id', metadata.order_id)
+        .maybeSingle();
+
+      if (order?.shop_id) {
+        const { data: existingRefund } = await client
+          .from('shop_transactions')
+          .select('id')
+          .eq('reference', reference)
+          .eq('type', 'refund')
+          .maybeSingle();
+
+        if (!existingRefund) {
+          const refundAmount = Number(order.total_amount || paymentAmount || 0);
+          try {
+            await client.rpc('decrement_shop_balance', {
+              p_shop_id: order.shop_id,
+              p_amount: refundAmount,
+            });
+            await client.from('shop_transactions').insert({
+              shop_id: order.shop_id,
+              order_id: order.id,
+              amount: -Math.abs(refundAmount),
+              type: 'refund',
+              status: 'completed',
+              reference,
+              metadata: { reason: 'payment_reversed' },
+            });
+          } catch (e: any) {
+            await client.from('shop_transactions').insert({
+              shop_id: order.shop_id,
+              order_id: order.id,
+              amount: -Math.abs(refundAmount),
+              type: 'refund',
+              status: 'failed',
+              reference,
+              metadata: { reason: 'payment_reversed', error: e.message },
+            });
+          }
+        }
+
+        const { data: shop } = await client
+          .from('shops')
+          .select('id, user_id')
+          .eq('id', order.shop_id)
+          .maybeSingle();
+
+        if (shop?.user_id) {
+          await client.from('notifications').insert([
+            {
+              user_id: shop.user_id,
+              type: 'shop_payment_issue',
+              title: 'Payment reversed',
+              body: `Payment for order #${order.id.substring(0, 8).toUpperCase()} was reversed.`,
+              data: { order_id: order.id },
+              is_read: false,
+            },
+            {
+              user_id: order.buyer_id,
+              type: 'shop_payment_issue',
+              title: 'Payment issue',
+              body: `Your payment for order #${order.id.substring(0, 8).toUpperCase()} was reversed.`,
+              data: { order_id: order.id },
+              is_read: false,
+            },
+          ]);
+        }
+      }
+    }
+  }
+
+  private async reconcileFailedPayments() {
+    const client = this.supabase.getClient();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: failed } = await client
+      .from('payment_intents')
+      .select('reference, status')
+      .in('status', ['failed', 'expired'])
+      .gte('created_at', since)
+      .limit(50);
+
+    for (const p of failed || []) {
+      const snippe = await this.checkPaymentStatusFromSnippe(p.reference);
+      if (snippe?.status === 'completed') {
+        await client
+          .from('payment_intents')
+          .update({ status: 'completed', updated_at: new Date().toISOString() })
+          .eq('reference', p.reference);
+        await this.handleCompletedPayment(p.reference, snippe);
+      }
+    }
+  }
+
+  private async reconcileMissingCredits() {
+    const client = this.supabase.getClient();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: completed } = await client
+      .from('payment_intents')
+      .select('reference, metadata, amount, currency, user_id')
+      .eq('status', 'completed')
+      .gte('created_at', since)
+      .limit(50);
+
+    for (const intent of completed || []) {
+      const metadata = intent.metadata || {};
+      if (metadata.kind === 'coin_topup') {
+        const { data: tx } = await client
+          .from('coin_transactions')
+          .select('id')
+          .eq('reference', intent.reference)
+          .eq('type', 'deposit')
+          .maybeSingle();
+        if (!tx) {
+          await this.handleCompletedPayment(intent.reference, intent);
+        }
+      }
+      if (metadata.order_id) {
+        const { data: stx } = await client
+          .from('shop_transactions')
+          .select('id')
+          .eq('reference', intent.reference)
+          .eq('type', 'sale')
+          .maybeSingle();
+        if (!stx) {
+          await this.handleCompletedPayment(intent.reference, intent);
+        }
+      }
+    }
   }
 
   private async _updateSoldCounts(orderId: string) {
