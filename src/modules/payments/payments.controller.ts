@@ -32,6 +32,12 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
+  @Get('shop-wallet')
+  async getShopWallet(@CurrentUser() userId: string) {
+    return this.paymentsService.getShopWalletSummary(userId);
+  }
+
+  @UseGuards(AuthGuard)
   @Get(':reference/status')
   async getPaymentStatusFromDb(@CurrentUser() userId: string, @Param('reference') reference: string) {
     return this.paymentsService.getPaymentStatusFromDb(reference, userId);

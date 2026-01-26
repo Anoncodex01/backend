@@ -22,6 +22,7 @@ async function bootstrap() {
       },
     }),
   );
+  app.use(bodyParser.urlencoded({ extended: false }));
 
   // CORS
   app.enableCors({

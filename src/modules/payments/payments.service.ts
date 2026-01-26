@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { v4 as uuidv4 } from 'uuid';
+import * as nodemailer from 'nodemailer';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
@@ -47,6 +48,26 @@ export class PaymentsService {
 
   private get coinRate() {
     return Number(this.config.get<string>('COIN_RATE', '1'));
+  }
+
+  private get smtpHost() {
+    return this.config.get<string>('SMTP_HOST', '');
+  }
+
+  private get smtpPort() {
+    return Number(this.config.get<string>('SMTP_PORT', '587'));
+  }
+
+  private get smtpUser() {
+    return this.config.get<string>('SMTP_USER', '');
+  }
+
+  private get smtpPass() {
+    return this.config.get<string>('SMTP_PASS', '');
+  }
+
+  private get smtpFrom() {
+    return this.config.get<string>('SMTP_FROM', 'WhapVibez <no-reply@whapvibez.com>');
   }
 
   async createMobilePayment(userId: string, dto: CreateMobilePaymentDto) {
@@ -716,9 +737,19 @@ export class PaymentsService {
     if (metadata.order_id) {
       await client
         .from('orders')
-        .update({ status: 'paid', paid_at: new Date().toISOString() })
+        .update({ status: 'processing', updated_at: new Date().toISOString() })
         .eq('id', metadata.order_id);
-      this.logger.log(`✅ Updated order ${metadata.order_id} to paid`);
+      this.logger.log(`✅ Updated order ${metadata.order_id} to processing`);
+    }
+
+    if (metadata.kind === 'shop_order' || metadata.order_id) {
+      await this.creditShopWalletForOrder({
+        orderId: metadata.order_id,
+        reference,
+        fallbackAmount: Number(finalIntent.amount || payload.amount?.value || payload.amount || 0),
+        currency: finalIntent.currency || payload.currency || 'TZS',
+        metadata,
+      });
     }
 
     if (metadata.kind === 'coin_topup') {
@@ -792,6 +823,237 @@ export class PaymentsService {
     } else {
       this.logger.log(`ℹ️  Payment kind is not coin_topup, skipping coin processing:`, metadata.kind);
     }
+  }
+
+  private async creditShopWalletForOrder(input: {
+    orderId?: string;
+    reference: string;
+    fallbackAmount: number;
+    currency: string;
+    metadata: Record<string, any>;
+  }) {
+    const { orderId, reference, fallbackAmount, currency, metadata } = input;
+    if (!orderId) {
+      this.logger.warn('Shop wallet credit skipped: missing order_id');
+      return;
+    }
+
+    const client = this.supabase.getClient();
+
+    const { data: existingTx } = await client
+      .from('shop_transactions')
+      .select('id')
+      .eq('reference', reference)
+      .maybeSingle();
+
+    if (existingTx) {
+      this.logger.log(`⚠️  Shop transaction already processed for reference: ${reference}`);
+      return;
+    }
+
+    const { data: order, error: orderError } = await client
+      .from('orders')
+      .select('id, shop_id, total_amount, buyer_id')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (orderError || !order) {
+      this.logger.warn(`Order not found for shop wallet credit: ${orderId}`);
+      return;
+    }
+
+    const amount = Number(order.total_amount || fallbackAmount || 0);
+    if (!amount || amount <= 0) {
+      this.logger.warn(`Shop wallet credit skipped: invalid amount for order ${orderId}`);
+      return;
+    }
+
+    const { data: shop } = await client
+      .from('shops')
+      .select('id, shop_name, user_id')
+      .eq('id', order.shop_id)
+      .maybeSingle();
+
+    if (!shop?.id || !shop?.user_id) {
+      this.logger.warn(`Shop not found for order ${orderId}`);
+      return;
+    }
+
+    const { data: newBalance, error: balanceError } = await client.rpc('increment_shop_balance', {
+      p_shop_id: shop.id,
+      p_amount: amount,
+    });
+
+    if (balanceError) {
+      this.logger.error('❌ Error incrementing shop balance:', balanceError);
+      throw new BadRequestException('Failed to update shop balance');
+    }
+
+    const { error: txError } = await client.from('shop_transactions').insert({
+      shop_id: shop.id,
+      order_id: order.id,
+      amount,
+      type: 'sale',
+      status: 'completed',
+      reference,
+      metadata: {
+        currency,
+        buyer_id: order.buyer_id,
+        order_id: order.id,
+        ...metadata,
+      },
+    });
+
+    if (txError) {
+      this.logger.error('❌ Error creating shop transaction:', txError);
+    } else {
+      this.logger.log(`✅ Shop wallet credited for order ${orderId}`, {
+        amount,
+        newBalance,
+      });
+    }
+
+    await this.sendShopPaymentEmail({
+      shopId: shop.id,
+      shopName: shop.shop_name,
+      ownerId: shop.user_id,
+      amount,
+      currency,
+      orderId: order.id,
+      reference,
+    });
+  }
+
+  private async sendShopPaymentEmail(input: {
+    shopId: string;
+    shopName?: string;
+    ownerId: string;
+    amount: number;
+    currency: string;
+    orderId: string;
+    reference: string;
+  }) {
+    if (!this.smtpHost || !this.smtpUser || !this.smtpPass) {
+      this.logger.debug('SMTP not configured, skipping shop payment email.');
+      return;
+    }
+
+    const client = this.supabase.getClient();
+    const { data: owner } = await client
+      .from('users')
+      .select('email, full_name, username')
+      .eq('id', input.ownerId)
+      .maybeSingle();
+
+    if (!owner?.email) {
+      this.logger.warn(`Shop owner email not found for shop ${input.shopId}`);
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: this.smtpHost,
+      port: this.smtpPort,
+      secure: this.smtpPort === 465,
+      auth: {
+        user: this.smtpUser,
+        pass: this.smtpPass,
+      },
+    });
+
+    const shopLabel = input.shopName || 'Your shop';
+    const ownerName = owner.full_name || owner.username || 'Seller';
+    const amountText = `${input.currency} ${input.amount.toFixed(0)}`;
+
+    const subject = `New order payment received - ${shopLabel}`;
+    const text = [
+      `Hi ${ownerName},`,
+      '',
+      `You received a new payment for order ${input.orderId}.`,
+      `Amount: ${amountText}`,
+      `Payment reference: ${input.reference}`,
+      '',
+      'Log in to your WhapVibez dashboard to view the order details.',
+      '',
+      'Thanks,',
+      'WhapVibez',
+    ].join('\n');
+
+    try {
+      await transporter.sendMail({
+        from: this.smtpFrom,
+        to: owner.email,
+        subject,
+        text,
+      });
+      this.logger.log(`📧 Shop payment email sent to ${owner.email}`);
+    } catch (e: any) {
+      this.logger.error(`❌ Failed to send shop payment email: ${e.message}`);
+    }
+  }
+
+  async getShopWalletSummary(userId: string) {
+    const client = this.supabase.getClient();
+    const { data: shop } = await client
+      .from('shops')
+      .select('id, shop_name')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!shop?.id) {
+      return { hasShop: false };
+    }
+
+    const { data: wallet } = await client
+      .from('shop_wallets')
+      .select('balance')
+      .eq('shop_id', shop.id)
+      .maybeSingle();
+
+    if (!wallet) {
+      await client.from('shop_wallets').insert({ shop_id: shop.id, balance: 0 });
+    }
+
+    const [{ data: transactions }, { data: pendingOrders }] = await Promise.all([
+      client
+        .from('shop_transactions')
+        .select('*')
+        .eq('shop_id', shop.id)
+        .order('created_at', { ascending: false })
+        .limit(50),
+      client
+        .from('orders')
+        .select('total_amount')
+        .eq('shop_id', shop.id)
+        .in('status', ['pending', 'processing', 'shipped']),
+    ]);
+
+    const txList = (transactions as any[]) || [];
+    let totalIncome = 0;
+    for (const tx of txList) {
+      const amount = Number(tx.amount || 0);
+      if (amount > 0) totalIncome += amount;
+    }
+
+    let pendingAmount = 0;
+    for (const order of pendingOrders || []) {
+      pendingAmount += Number(order.total_amount || 0);
+    }
+
+    const { data: finalWallet } = await client
+      .from('shop_wallets')
+      .select('balance')
+      .eq('shop_id', shop.id)
+      .maybeSingle();
+
+    return {
+      hasShop: true,
+      shopId: shop.id,
+      shopName: shop.shop_name,
+      balance: Number(finalWallet?.balance || 0),
+      totalIncome,
+      pendingAmount,
+      transactions: txList,
+    };
   }
 
   private async postToSnippe(payload: Record<string, any>, idempotencyKey: string): Promise<SnippeResponse> {

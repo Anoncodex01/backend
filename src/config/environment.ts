@@ -78,8 +78,8 @@ export const environment = {
     port: parseInt(process.env.SMTP_PORT || '465', 10),
     secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_PORT === '465',
     user: process.env.SMTP_USER || '',
-    password: process.env.SMTP_PASSWORD || '',
-    fromEmail: process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || '',
+    password: process.env.SMTP_PASSWORD || process.env.SMTP_PASS || '',
+    fromEmail: process.env.SMTP_FROM_EMAIL || process.env.SMTP_FROM || process.env.SMTP_USER || '',
     fromName: process.env.SMTP_FROM_NAME || 'WhapVibez',
   },
 

@@ -20,6 +20,7 @@ import { SearchModule } from './modules/search/search.module';
 import { CommunitiesModule } from './modules/communities/communities.module';
 import { CommentsModule } from './modules/comments/comments.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { AdminModule } from './modules/admin/admin.module';
 
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
@@ -58,6 +59,7 @@ import { HealthController } from './health.controller';
     CommunitiesModule,
     CommentsModule,
     PaymentsModule,
+    AdminModule,
   ],
   controllers: [HealthController],
   providers: [RealtimeGateway],
