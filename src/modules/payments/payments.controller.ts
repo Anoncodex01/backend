@@ -6,6 +6,7 @@ import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
 import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
+import { CreateShopWithdrawalDto } from './dto/create-shop-withdrawal.dto';
 
 @Controller('payments')
 export class PaymentsController {
@@ -58,6 +59,12 @@ export class PaymentsController {
   @Post('withdraw')
   async withdraw(@CurrentUser() userId: string, @Body() dto: CreateWithdrawalDto) {
     return this.paymentsService.createWithdrawal(userId, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('shop-withdraw')
+  async shopWithdraw(@CurrentUser() userId: string, @Body() dto: CreateShopWithdrawalDto) {
+    return this.paymentsService.createShopWithdrawal(userId, dto);
   }
 
   @UseGuards(AuthGuard)

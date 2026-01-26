@@ -46,6 +46,10 @@ export class PaymentsService {
     return this.config.get<string>('SNIPPE_WEBHOOK_URL', '');
   }
 
+  private get payoutWebhookUrl() {
+    return this.config.get<string>('SNIPPE_PAYOUT_WEBHOOK_URL', this.webhookUrl);
+  }
+
   private get coinRate() {
     return Number(this.config.get<string>('COIN_RATE', '1'));
   }
@@ -420,6 +424,37 @@ export class PaymentsService {
   }
 
   /**
+   * Expire pending payments older than 10 minutes
+   */
+  @Cron(CronExpression.EVERY_MINUTE)
+  async expireStalePayments() {
+    const client = this.supabase.getClient();
+    const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    try {
+      const { data, error } = await client
+        .from('payment_intents')
+        .update({
+          status: 'expired',
+          updated_at: new Date().toISOString(),
+        })
+        .in('status', ['pending', 'processing'])
+        .lt('created_at', cutoff)
+        .select('reference');
+
+      if (error) {
+        this.logger.error('Error expiring stale payments:', error);
+        return;
+      }
+
+      if ((data || []).length > 0) {
+        this.logger.log(`⏱️ Expired ${data?.length} stale payments`);
+      }
+    } catch (e: any) {
+      this.logger.error('Error in expireStalePayments:', e.message);
+    }
+  }
+
+  /**
    * Manually trigger payment status check for a specific reference
    */
   async manualCheckPaymentStatus(reference: string) {
@@ -493,6 +528,97 @@ export class PaymentsService {
       }
       throw new BadRequestException('Unable to create withdrawal');
     }
+  }
+
+  async createShopWithdrawal(userId: string, dto: {
+    amount: number;
+    channel: string;
+    recipientPhone: string;
+    recipientName: string;
+    narration?: string;
+  }) {
+    const minAmount = 10000;
+    const feeRate = 0.1;
+    if (dto.amount < minAmount) {
+      throw new BadRequestException(`Minimum withdrawal is ${minAmount}`);
+    }
+
+    const client = this.supabase.getClient();
+    const { data: shop } = await client
+      .from('shops')
+      .select('id, shop_name')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!shop?.id) {
+      throw new BadRequestException('Shop not found');
+    }
+
+    const feeAmount = Math.ceil(dto.amount * feeRate);
+    const netAmount = dto.amount - feeAmount;
+    if (netAmount <= 0) {
+      throw new BadRequestException('Invalid withdrawal amount');
+    }
+
+    const { data: newBalance, error: balanceError } = await client.rpc('decrement_shop_balance', {
+      p_shop_id: shop.id,
+      p_amount: dto.amount,
+    });
+
+    if (balanceError) {
+      if ((balanceError?.message || '').includes('insufficient_balance')) {
+        throw new BadRequestException('Not enough shop balance');
+      }
+      throw new BadRequestException('Unable to process withdrawal');
+    }
+
+    const idempotencyKey = uuidv4();
+    const payoutPayload = {
+      amount: netAmount,
+      channel: dto.channel,
+      recipient_phone: dto.recipientPhone,
+      recipient_name: dto.recipientName,
+      narration: dto.narration || `Shop withdrawal ${shop.shop_name || ''}`.trim(),
+      webhook_url: this.payoutWebhookUrl || undefined,
+      metadata: {
+        shop_id: shop.id,
+        user_id: userId,
+        gross_amount: dto.amount,
+        fee_amount: feeAmount,
+        net_amount: netAmount,
+      },
+    };
+
+    const payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
+    const payoutData = payoutResponse?.data || payoutResponse;
+    const reference = payoutData?.reference || payoutData?.data?.reference;
+    const status = payoutData?.status || 'pending';
+
+    await client.from('withdrawals').insert({
+      shop_id: shop.id,
+      user_id: userId,
+      amount: dto.amount,
+      payment_method: dto.channel,
+      account_details: dto.recipientPhone,
+      status,
+      provider: 'snippe',
+      reference,
+      fee_amount: feeAmount,
+      net_amount: netAmount,
+      metadata: {
+        recipient_name: dto.recipientName,
+        narration: dto.narration,
+      },
+    });
+
+    return {
+      reference,
+      status,
+      grossAmount: dto.amount,
+      feeAmount,
+      netAmount,
+      newBalance,
+    };
   }
 
   async getWalletSummary(userId: string) {
@@ -1204,6 +1330,25 @@ export class PaymentsService {
     const json = await res.json();
     if (!res.ok) {
       throw new BadRequestException(json?.message || 'Payment creation failed');
+    }
+    return json;
+  }
+
+  private async postToSnippePayout(payload: Record<string, any>, idempotencyKey: string): Promise<any> {
+    const url = `${this.apiUrl}/payouts/send`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const json = await res.json();
+    if (!res.ok) {
+      throw new BadRequestException(json?.message || 'Payout creation failed');
     }
     return json;
   }
