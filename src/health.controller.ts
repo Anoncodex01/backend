@@ -47,43 +47,45 @@ export class HealthController {
   sharePost(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
     const deepLink = `whapvibez://post/${id}`;
     const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.whapvibez.app';
-    const appStoreUrl = 'https://apps.apple.com/app/whapvibez/id000000000'; // Replace with real App Store ID when published
-    const fallback = `https://whapvibez.com/post/${id}`;
+    const appStoreUrl = 'https://apps.apple.com/app/whapvibez/id000000000';
     const ua = (req.headers['user-agent'] || '').toString();
     const isAndroid = /Android/i.test(ua);
-    const btnHref = isAndroid
+    const redirectUrl = isAndroid
       ? `intent://post/${id}#Intent;scheme=whapvibez;package=com.whapvibez.app;S.browser_fallback_url=${encodeURIComponent(playStoreUrl)};end`
       : deepLink;
+    const fallbackUrl = isAndroid ? playStoreUrl : appStoreUrl;
     const html = `
       <!doctype html>
       <html>
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <meta name="apple-itunes-app" content="app-id=000000000" />
-          <title>Open in WhapVibez</title>
+          <meta name="theme-color" content="#0f0f14" />
+          <title>Redirecting to WhapVibez</title>
           <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; padding: 24px; max-width: 360px; margin: 0 auto; text-align: center; }
-            .btn { display: inline-block; padding: 14px 28px; background: #7c3aed; color: #fff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 16px; margin: 8px 0; }
-            .btn:active { opacity: 0.9; }
-            .fallback { margin-top: 20px; font-size: 12px; color: #666; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; background: #0f0f14; display: flex; align-items: center; justify-content: center; }
+            .popup { background: linear-gradient(145deg, #1a1a24 0%, #12121a 100%); border-radius: 20px; padding: 32px 40px; max-width: 340px; width: 90%; box-shadow: 0 25px 50px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05); text-align: center; animation: popIn 0.4s ease-out; }
+            @keyframes popIn { from { opacity: 0; transform: scale(0.9) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+            .spinner { width: 48px; height: 48px; margin: 0 auto 20px; border: 3px solid rgba(124,58,237,0.2); border-top-color: #7c3aed; border-radius: 50%; animation: spin 0.8s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
+            .title { color: #fff; font-size: 18px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.02em; }
+            .sub { color: rgba(255,255,255,0.5); font-size: 14px; }
           </style>
         </head>
         <body>
-          <h2>Open in WhapVibez</h2>
-          <p>Tap the button below to open this post in the app.</p>
-          <a id="openBtn" href="${btnHref}" class="btn">Open in app</a>
-          <p class="fallback">Don't have the app? <a href="${playStoreUrl}">Get it on Google Play</a> or <a href="${appStoreUrl}">App Store</a></p>
+          <div class="popup">
+            <div class="spinner"></div>
+            <p class="title">Redirecting to WhapVibez</p>
+            <p class="sub">Please wait, opening the app…</p>
+          </div>
           <script>
-            document.getElementById('openBtn').onclick = function() {
-              var href = this.href;
-              window.location.href = href;
-              setTimeout(function() {
-                if (/Android/i.test(navigator.userAgent)) window.location.href = '${playStoreUrl}';
-                else window.location.href = '${fallback}';
-              }, 2500);
-              return true;
-            };
+            (function() {
+              var url = '${redirectUrl}';
+              var fallback = '${fallbackUrl}';
+              window.location.href = url;
+              setTimeout(function() { window.location.href = fallback; }, 2200);
+            })();
           </script>
         </body>
       </html>

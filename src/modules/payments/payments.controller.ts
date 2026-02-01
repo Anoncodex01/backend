@@ -74,6 +74,12 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
+  @Get('withdrawals/:reference')
+  async getWithdrawalStatus(@CurrentUser() userId: string, @Param('reference') reference: string) {
+    return this.paymentsService.getWithdrawalStatus(reference, userId);
+  }
+
+  @UseGuards(AuthGuard)
   @Post('gift')
   async gift(@CurrentUser() userId: string, @Body() dto: CreateGiftTransferDto) {
     return this.paymentsService.sendGift(userId, dto);

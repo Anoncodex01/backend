@@ -3,17 +3,12 @@ import { IsInt, IsOptional, IsString, Min, IsIn } from 'class-validator';
 export class CreateWithdrawalDto {
   @IsInt()
   @Min(1)
-  amount: number;
+  amount: number; // amount in TZS to be paid out
 
+  @IsOptional()
   @IsString()
-  @IsIn(['TZS', 'KES', 'UGX'])
-  currency: string;
-
-  @IsString()
-  method: string; // e.g. mobile, bank
-
-  @IsString()
-  account: string; // phone number or account number
+  @IsIn(['TZS'])
+  currency?: string;
 
   @IsOptional()
   metadata?: Record<string, any>;

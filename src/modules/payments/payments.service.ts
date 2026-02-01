@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
 import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
@@ -32,6 +33,7 @@ export class PaymentsService {
     private config: ConfigService,
     private supabase: SupabaseService,
     private firebase: FirebaseService,
+    private notifications: NotificationsService,
   ) {}
 
   private get apiUrl() {
@@ -548,37 +550,122 @@ export class PaymentsService {
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
     try {
+      const payoutRate = 0.75;
+      const feeRate = 0.25;
+      const withdrawFeeRate = 0.03;
+      const amountTzs = Number(dto.amount || 0);
+      if (amountTzs <= 0) {
+        throw new BadRequestException('Invalid withdrawal amount');
+      }
+      if (this.coinRate <= 0) {
+        throw new BadRequestException('Coin rate not configured');
+      }
+
+      const coinsRequired = Math.ceil((amountTzs / payoutRate) * this.coinRate);
+      const grossAmount = amountTzs / payoutRate;
+      const platformFeeAmount = grossAmount * feeRate;
+      const withdrawFeeAmount = amountTzs * withdrawFeeRate;
+      const feeAmount = platformFeeAmount + withdrawFeeAmount;
+      const netAmount = amountTzs - withdrawFeeAmount;
+      if (netAmount <= 0) {
+        throw new BadRequestException('Invalid withdrawal amount');
+      }
+
+      const { data: payoutMethod } = await client
+        .from('user_payout_methods')
+        .select('provider, phone, full_name')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!payoutMethod?.phone || !payoutMethod?.full_name) {
+        throw new BadRequestException('Please add a payout method in settings');
+      }
+
       const { data: newBalance, error } = await client.rpc('decrement_coin_balance', {
         p_user_id: userId,
-        p_amount: dto.amount,
+        p_amount: coinsRequired,
       });
       if (error) {
         throw error;
       }
 
+      const idempotencyKey = uuidv4();
+      const payoutPayload = {
+        amount: netAmount,
+        channel: 'mobile',
+        recipient_phone: payoutMethod.phone,
+        recipient_name: payoutMethod.full_name,
+        narration: 'Live rewards withdrawal',
+        webhook_url: this.payoutWebhookUrl || undefined,
+        metadata: {
+          user_id: userId,
+          gross_amount: grossAmount,
+          platform_fee_amount: platformFeeAmount,
+          withdraw_fee_amount: withdrawFeeAmount,
+          fee_amount: feeAmount,
+          net_amount: netAmount,
+          coin_amount: coinsRequired,
+          provider: payoutMethod.provider,
+        },
+      };
+
+      const payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
+      const payoutData = payoutResponse?.data || payoutResponse;
+      const reference = payoutData?.reference || payoutData?.data?.reference;
+      const status = payoutData?.status || 'pending';
+
       await client.from('withdrawal_requests').insert({
         user_id: userId,
-        amount: dto.amount,
-        currency: dto.currency,
-        method: dto.method,
-        account: dto.account,
-        status: 'pending',
-        metadata: dto.metadata || {},
+        amount: coinsRequired,
+        currency: 'TZS',
+        method: 'mobile',
+        account: payoutMethod.phone,
+        status,
+        provider: 'snippe',
+        reference,
+        fee_amount: feeAmount,
+        net_amount: netAmount,
+        metadata: {
+          ...(dto.metadata || {}),
+          payout_rate: payoutRate,
+          gross_amount: grossAmount,
+          platform_fee_amount: platformFeeAmount,
+          withdraw_fee_amount: withdrawFeeAmount,
+          coin_amount: coinsRequired,
+          provider: payoutMethod.provider,
+          recipient_name: payoutMethod.full_name,
+        },
       });
 
       await client.from('coin_transactions').insert({
         user_id: userId,
-        amount: -Math.abs(dto.amount),
+        amount: -Math.abs(coinsRequired),
         type: 'withdraw',
-        status: 'pending',
-        metadata: dto.metadata || {},
+        status,
+        reference,
+        metadata: {
+          ...(dto.metadata || {}),
+          net_amount: netAmount,
+          gross_amount: grossAmount,
+          platform_fee_amount: platformFeeAmount,
+          withdraw_fee_amount: withdrawFeeAmount,
+          fee_amount: feeAmount,
+        },
       });
 
       if (typeof newBalance === 'number') {
         await this.syncFirestoreWallet(userId, newBalance);
       }
 
-      return { success: true };
+      return {
+        success: true,
+        reference,
+        status,
+        coinAmount: coinsRequired,
+        grossAmount,
+        feeAmount,
+        netAmount,
+      };
     } catch (e: any) {
       if ((e?.message || '').includes('insufficient_balance')) {
         throw new BadRequestException('Not enough coins');
@@ -596,6 +683,7 @@ export class PaymentsService {
   }) {
     const minAmount = 10000;
     const feeRate = 0.1;
+    const withdrawFeeRate = 0.03;
     if (dto.amount < minAmount) {
       throw new BadRequestException(`Minimum withdrawal is ${minAmount}`);
     }
@@ -611,10 +699,21 @@ export class PaymentsService {
       throw new BadRequestException('Shop not found');
     }
 
-    const feeAmount = Math.ceil(dto.amount * feeRate);
+    const totalFeeRate = feeRate + withdrawFeeRate;
+    const feeAmount = Math.ceil(dto.amount * totalFeeRate);
     const netAmount = dto.amount - feeAmount;
     if (netAmount <= 0) {
       throw new BadRequestException('Invalid withdrawal amount');
+    }
+
+    const { data: payoutMethod } = await client
+      .from('shop_payout_methods')
+      .select('provider, phone, full_name')
+      .eq('shop_id', shop.id)
+      .maybeSingle();
+
+    if (!payoutMethod?.phone || !payoutMethod?.full_name) {
+      throw new BadRequestException('Please add a shop payout method in settings');
     }
 
     const { data: newBalance, error: balanceError } = await client.rpc('decrement_shop_balance', {
@@ -632,9 +731,9 @@ export class PaymentsService {
     const idempotencyKey = uuidv4();
     const payoutPayload = {
       amount: netAmount,
-      channel: dto.channel,
-      recipient_phone: dto.recipientPhone,
-      recipient_name: dto.recipientName,
+      channel: 'mobile',
+      recipient_phone: payoutMethod.phone,
+      recipient_name: payoutMethod.full_name,
       narration: dto.narration || `Shop withdrawal ${shop.shop_name || ''}`.trim(),
       webhook_url: this.payoutWebhookUrl || undefined,
       metadata: {
@@ -642,6 +741,8 @@ export class PaymentsService {
         user_id: userId,
         gross_amount: dto.amount,
         fee_amount: feeAmount,
+        withdraw_fee_amount: Math.ceil(dto.amount * withdrawFeeRate),
+        platform_fee_amount: Math.ceil(dto.amount * feeRate),
         net_amount: netAmount,
       },
     };
@@ -655,16 +756,19 @@ export class PaymentsService {
       shop_id: shop.id,
       user_id: userId,
       amount: dto.amount,
-      payment_method: dto.channel,
-      account_details: dto.recipientPhone,
+      payment_method: 'mobile',
+      account_details: payoutMethod.phone,
       status,
       provider: 'snippe',
       reference,
       fee_amount: feeAmount,
       net_amount: netAmount,
       metadata: {
-        recipient_name: dto.recipientName,
+        recipient_name: payoutMethod.full_name,
+        provider: payoutMethod.provider,
         narration: dto.narration,
+        withdraw_fee_amount: Math.ceil(dto.amount * withdrawFeeRate),
+        platform_fee_amount: Math.ceil(dto.amount * feeRate),
       },
     });
 
@@ -747,6 +851,33 @@ export class PaymentsService {
       transactions: txList,
       withdrawals: withdrawals || [],
     };
+  }
+
+  async getWithdrawalStatus(reference: string, userId: string) {
+    const client = this.supabase.getClient();
+    const { data: live } = await client
+      .from('withdrawal_requests')
+      .select('reference, status, amount, net_amount, fee_amount, created_at')
+      .eq('reference', reference)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (live?.reference) {
+      return { type: 'live', ...live };
+    }
+
+    const { data: shop } = await client
+      .from('withdrawals')
+      .select('reference, status, amount, net_amount, fee_amount, created_at')
+      .eq('reference', reference)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (shop?.reference) {
+      return { type: 'shop', ...shop };
+    }
+
+    throw new BadRequestException('Withdrawal not found');
   }
 
   async sendGift(senderId: string, dto: CreateGiftTransferDto) {
@@ -879,6 +1010,12 @@ export class PaymentsService {
         rowsUpdated: updateResult.data?.length || 0,
       });
 
+      // Handle payout webhooks
+      if (eventType?.toString().startsWith('payout.')) {
+        await this.handlePayoutWebhook(reference, eventType, webhookData);
+        return { received: true, eventType, reference, status };
+      }
+
       // Process based on event type
       if (eventType === 'payment.completed' || status === 'completed') {
         this.logger.log(`💰 Processing completed payment for reference: ${reference}`);
@@ -913,6 +1050,75 @@ export class PaymentsService {
         stack: error.stack,
       });
       throw error;
+    }
+  }
+
+  private async handlePayoutWebhook(reference: string, eventType: string, webhookData: any) {
+    const client = this.supabase.getClient();
+    const payoutStatus =
+      eventType === 'payout.completed' ? 'completed' :
+      eventType === 'payout.failed' || eventType === 'payout.reversed' ? 'failed' :
+      webhookData?.status || 'pending';
+
+    // Update shop withdrawals
+    const { data: shopWithdrawal } = await client
+      .from('withdrawals')
+      .select('id, shop_id, amount, status')
+      .eq('reference', reference)
+      .maybeSingle();
+
+    if (shopWithdrawal?.id) {
+      await client
+        .from('withdrawals')
+        .update({ status: payoutStatus, updated_at: new Date().toISOString() })
+        .eq('id', shopWithdrawal.id);
+
+      if (payoutStatus === 'failed' && shopWithdrawal.shop_id) {
+        await client.rpc('increment_shop_balance', {
+          p_shop_id: shopWithdrawal.shop_id,
+          p_amount: shopWithdrawal.amount,
+        });
+      }
+    }
+
+    // Update live reward withdrawals
+    const { data: withdrawal } = await client
+      .from('withdrawal_requests')
+      .select('id, user_id, amount, status')
+      .eq('reference', reference)
+      .maybeSingle();
+
+    if (withdrawal?.id) {
+      await client
+        .from('withdrawal_requests')
+        .update({ status: payoutStatus, updated_at: new Date().toISOString() })
+        .eq('id', withdrawal.id);
+
+      await client
+        .from('coin_transactions')
+        .update({ status: payoutStatus })
+        .eq('reference', reference)
+        .eq('type', 'withdraw');
+
+      if (payoutStatus === 'failed' && withdrawal.user_id && withdrawal.amount) {
+        const { data: newBalance } = await client.rpc('increment_coin_balance', {
+          p_user_id: withdrawal.user_id,
+          p_amount: withdrawal.amount,
+        });
+
+        await client.from('coin_transactions').insert({
+          user_id: withdrawal.user_id,
+          amount: Math.abs(withdrawal.amount),
+          type: 'adjustment',
+          status: 'completed',
+          reference,
+          metadata: { reason: 'payout_failed' },
+        });
+
+        if (typeof newBalance === 'number') {
+          await this.syncFirestoreWallet(withdrawal.user_id, newBalance);
+        }
+      }
     }
   }
 
@@ -1398,24 +1604,21 @@ export class PaymentsService {
       .maybeSingle();
     const buyerName = buyer?.full_name || buyer?.username || 'Customer';
 
-    await client.from('notifications').insert([
-      {
-        user_id: shop.user_id,
-        type: 'shop_order_paid',
-        title: 'New order paid',
-        body: `${buyerName} paid ${currency} ${amount.toFixed(0)} for order #${order.id.substring(0, 8).toUpperCase()}`,
-        data: { order_id: order.id, shop_id: shop.id },
-        is_read: false,
-      },
-      {
-        user_id: order.buyer_id,
-        type: 'shop_order_paid',
-        title: 'Payment received',
-        body: `Payment confirmed for your order #${order.id.substring(0, 8).toUpperCase()}.`,
-        data: { order_id: order.id, shop_id: shop.id },
-        is_read: false,
-      },
-    ]);
+    await this.notifications.sendPushNotification({
+      userId: shop.user_id,
+      type: 'shop_order_paid',
+      title: 'New order paid',
+      body: `${buyerName} paid ${currency} ${amount.toFixed(0)} for order #${order.id.substring(0, 8).toUpperCase()}`,
+      data: { order_id: order.id, shop_id: shop.id },
+    });
+
+    await this.notifications.sendPushNotification({
+      userId: order.buyer_id,
+      type: 'shop_order_paid',
+      title: 'Payment received',
+      body: `Payment confirmed for your order #${order.id.substring(0, 8).toUpperCase()}.`,
+      data: { order_id: order.id, shop_id: shop.id },
+    });
   }
 
   private async sendShopPaymentEmail(input: {
