@@ -1638,12 +1638,15 @@ export class PaymentsService {
       .eq('id', order.buyer_id)
       .maybeSingle();
     const buyerName = buyer?.full_name || buyer?.username || 'Customer';
+    const productInfo = await this.getOrderPrimaryProductInfo(order.id);
+    const productLabel = productInfo?.name ? ` for ${productInfo.name}` : '';
 
     await this.notifications.sendPushNotification({
       userId: shop.user_id,
       type: 'shop_order_paid',
       title: 'New order paid',
-      body: `${buyerName} paid ${currency} ${amount.toFixed(0)} for order #${order.id.substring(0, 8).toUpperCase()}`,
+      body: `${buyerName} paid ${currency} ${amount.toFixed(0)}${productLabel}`,
+      imageUrl: productInfo?.imageUrl,
       data: { order_id: order.id, shop_id: shop.id },
     });
 
@@ -1651,9 +1654,29 @@ export class PaymentsService {
       userId: order.buyer_id,
       type: 'shop_order_paid',
       title: 'Payment received',
-      body: `Payment confirmed for your order #${order.id.substring(0, 8).toUpperCase()}.`,
+      body: `Payment confirmed${productLabel}.`,
+      imageUrl: productInfo?.imageUrl,
       data: { order_id: order.id, shop_id: shop.id },
     });
+  }
+
+  private async getOrderPrimaryProductInfo(orderId: string) {
+    const client = this.supabase.getClient();
+    const { data: items } = await client
+      .from('order_items')
+      .select('products(name, thumbnail_url, image_url, image_urls)')
+      .eq('order_id', orderId)
+      .limit(1);
+
+    const item: any = (items || [])[0];
+    const product: any = item?.products || item?.products?.[0];
+    if (!product) return undefined;
+    const name = product.name as string | undefined;
+    const imageUrl =
+      (product.thumbnail_url as string | undefined) ||
+      (product.image_url as string | undefined) ||
+      (Array.isArray(product.image_urls) ? product.image_urls[0] : undefined);
+    return { name, imageUrl };
   }
 
   private async sendShopPaymentEmail(input: {

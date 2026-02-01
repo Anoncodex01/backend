@@ -10,6 +10,7 @@ interface NotificationPayload {
   title: string;
   body: string;
   data?: Record<string, any>;
+  imageUrl?: string;
 }
 
 @Injectable()
@@ -39,8 +40,10 @@ export class NotificationsService {
         tokens,
         title: payload.title,
         body: payload.body,
+        imageUrl: payload.imageUrl,
         data: {
           type: payload.type,
+          ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
           ...Object.fromEntries(
             Object.entries(payload.data || {}).map(([k, v]) => [k, String(v)]),
           ),
@@ -81,11 +84,14 @@ export class NotificationsService {
     // Set debounce (1 hour)
     await this.redisService.set(debounceKey, '1', 3600);
 
+    const actorImage = await this.getUserProfileImage(data.likerId);
+
     await this.sendPushNotification({
       userId: data.postOwnerId,
       type: 'like',
       title: 'New Like',
       body: `${data.likerName} liked your video`,
+      imageUrl: actorImage,
       data: { postId: data.postId, userId: data.likerId },
     });
   }
@@ -103,11 +109,14 @@ export class NotificationsService {
     // Don't notify if commenting on own post
     if (data.postOwnerId === data.commenterId) return;
 
+    const actorImage = await this.getUserProfileImage(data.commenterId);
+
     await this.sendPushNotification({
       userId: data.postOwnerId,
       type: 'comment',
       title: 'New Comment',
       body: `${data.commenterName}: ${data.commentPreview.substring(0, 50)}`,
+      imageUrl: actorImage,
       data: { postId: data.postId, userId: data.commenterId },
     });
   }
@@ -120,11 +129,14 @@ export class NotificationsService {
     followerId: string;
     followerName: string;
   }) {
+    const actorImage = await this.getUserProfileImage(data.followerId);
+
     await this.sendPushNotification({
       userId: data.followedUserId,
       type: 'follow',
       title: 'New Follower',
       body: `${data.followerName} started following you`,
+      imageUrl: actorImage,
       data: { userId: data.followerId },
     });
   }
@@ -180,11 +192,21 @@ export class NotificationsService {
       type: 'message',
       title: data.senderName,
       body: data.messagePreview.substring(0, 100),
+      imageUrl: undefined,
       data: {
         conversationId: data.conversationId,
         senderId: data.senderId,
       },
     });
+  }
+
+  private async getUserProfileImage(userId: string) {
+    try {
+      const user = await this.supabaseService.getUser(userId);
+      return user?.profile_image_url || undefined;
+    } catch (_) {
+      return undefined;
+    }
   }
 }
 

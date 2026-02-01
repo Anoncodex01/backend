@@ -21,6 +21,9 @@ export class SendNotificationDto {
   @IsOptional()
   @IsObject()
   data?: Record<string, any>;
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
 }
 
 @Controller('notifications')

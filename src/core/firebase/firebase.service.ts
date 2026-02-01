@@ -102,7 +102,7 @@ export class FirebaseService implements OnModuleInit {
       android: {
         priority: 'high',
         notification: {
-          channelId: 'default',
+          channelId: 'whapvibez_notifications',
           priority: 'high',
           defaultSound: true,
           defaultVibrateTimings: true,
@@ -133,14 +133,22 @@ export class FirebaseService implements OnModuleInit {
     title: string;
     body: string;
     data?: Record<string, string>;
+    imageUrl?: string;
   }): Promise<admin.messaging.BatchResponse> {
     const message: admin.messaging.MulticastMessage = {
       tokens: data.tokens,
       notification: {
         title: data.title,
         body: data.body,
+        imageUrl: data.imageUrl,
       },
       data: data.data,
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'whapvibez_notifications',
+        },
+      },
     };
 
     return admin.messaging().sendEachForMulticast(message);
