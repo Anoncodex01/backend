@@ -5,14 +5,21 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
+import { IsObject, IsOptional, IsString } from 'class-validator';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
-class SendNotificationDto {
+export class SendNotificationDto {
+  @IsString()
   userId: string;
+  @IsString()
   type: string;
+  @IsString()
   title: string;
+  @IsString()
   body: string;
+  @IsOptional()
+  @IsObject()
   data?: Record<string, any>;
 }
 

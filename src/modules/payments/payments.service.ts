@@ -1349,6 +1349,8 @@ export class PaymentsService {
     await this._updateSoldCounts(order.id);
     await this._notifyOrderPaid(order, shop, amount, currency);
 
+    const productSummary = await this.getOrderProductSummary(order.id);
+
     await this.sendShopPaymentEmail({
       shopId: shop.id,
       shopName: shop.shop_name,
@@ -1357,6 +1359,7 @@ export class PaymentsService {
       currency,
       orderId: order.id,
       reference,
+      productSummary,
     });
 
     await this.sendBuyerPaymentEmail({
@@ -1365,6 +1368,7 @@ export class PaymentsService {
       amount,
       currency,
       reference,
+      productSummary,
     });
 
     await this.logAdminEvent({
@@ -1597,6 +1601,30 @@ export class PaymentsService {
     }
   }
 
+  private async getOrderProductSummary(orderId: string) {
+    const client = this.supabase.getClient();
+    const { data: items } = await client
+      .from('order_items')
+      .select('quantity, product_id, products(name)')
+      .eq('order_id', orderId);
+
+    const summaryParts: string[] = [];
+    for (const item of items || []) {
+      const qty = Number(item.quantity || 0);
+      const products = (item as any)?.products;
+      const productName =
+        (Array.isArray(products) ? products[0]?.name : products?.name) ||
+        (item as any)?.product_id ||
+        'Product';
+      if (qty > 1) {
+        summaryParts.push(`${productName} x${qty}`);
+      } else {
+        summaryParts.push(`${productName}`);
+      }
+    }
+    return summaryParts.length ? summaryParts.join(', ') : undefined;
+  }
+
   private async _notifyOrderPaid(
     order: { id: string; buyer_id: string; shop_id: string },
     shop: { id: string; shop_name?: string; user_id: string },
@@ -1636,6 +1664,7 @@ export class PaymentsService {
     currency: string;
     orderId: string;
     reference: string;
+    productSummary?: string;
   }) {
     if (!this.smtpHost || !this.smtpUser || !this.smtpPass) {
       this.logger.debug('SMTP not configured, skipping shop payment email.');
@@ -1673,6 +1702,7 @@ export class PaymentsService {
       `Hi ${ownerName},`,
       '',
       `You received a new payment for order ${input.orderId}.`,
+      ...(input.productSummary ? [`Products: ${input.productSummary}`] : []),
       `Amount: ${amountText}`,
       `Payment reference: ${input.reference}`,
       '',
@@ -1701,6 +1731,7 @@ export class PaymentsService {
     amount: number;
     currency: string;
     reference: string;
+    productSummary?: string;
   }) {
     if (!this.smtpHost || !this.smtpUser || !this.smtpPass) {
       this.logger.debug('SMTP not configured, skipping buyer payment email.');
@@ -1737,6 +1768,7 @@ export class PaymentsService {
       `Hi ${buyerName},`,
       '',
       `We received your payment for order ${input.orderId}.`,
+      ...(input.productSummary ? [`Products: ${input.productSummary}`] : []),
       `Amount: ${amountText}`,
       `Payment reference: ${input.reference}`,
       '',
