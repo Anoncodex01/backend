@@ -7,6 +7,7 @@ import {
   UseGuards,
   UnauthorizedException,
 } from '@nestjs/common';
+import { IsString } from 'class-validator';
 import { AuthService } from './auth.service';
 import { AuthGuard } from './guards/auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -16,7 +17,9 @@ class FirebaseTokenDto {
 }
 
 class FcmTokenDto {
+  @IsString()
   fcmToken: string;
+  @IsString()
   deviceId: string;
 }
 
