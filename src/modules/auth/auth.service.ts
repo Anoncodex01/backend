@@ -105,8 +105,14 @@ export class AuthService {
    */
   async storeFcmToken(userId: string, fcmToken: string, deviceId: string) {
     const key = `fcm_tokens:${userId}`;
-    await this.redisService.hset(key, deviceId, fcmToken);
-    await this.redisService.expire(key, 30 * 24 * 60 * 60); // 30 days
+    try {
+      await this.redisService.hset(key, deviceId, fcmToken);
+      await this.redisService.expire(key, 30 * 24 * 60 * 60); // 30 days
+      console.log(`✅ Stored FCM token for user ${userId} device ${deviceId}`);
+    } catch (e: any) {
+      console.error(`❌ Failed to store FCM token for ${userId}:`, e?.message || e);
+      throw e;
+    }
   }
 
   /**
@@ -114,8 +120,15 @@ export class AuthService {
    */
   async getFcmTokens(userId: string): Promise<string[]> {
     const key = `fcm_tokens:${userId}`;
-    const tokens = await this.redisService.hgetall(key);
-    return Object.values(tokens);
+    try {
+      const tokens = await this.redisService.hgetall(key);
+      const values = Object.values(tokens);
+      console.log(`ℹ️ FCM tokens for ${userId}: ${values.length}`);
+      return values;
+    } catch (e: any) {
+      console.error(`❌ Failed to read FCM tokens for ${userId}:`, e?.message || e);
+      return [];
+    }
   }
 
   /**
