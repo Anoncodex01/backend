@@ -670,6 +670,13 @@ export class PaymentsService {
       if ((e?.message || '').includes('insufficient_balance')) {
         throw new BadRequestException('Not enough coins');
       }
+      if (e instanceof BadRequestException) {
+        throw e;
+      }
+      const message = (e?.message || '').toString().trim();
+      if (message.length > 0) {
+        throw new BadRequestException(message);
+      }
       throw new BadRequestException('Unable to create withdrawal');
     }
   }
