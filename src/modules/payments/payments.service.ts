@@ -917,6 +917,20 @@ export class PaymentsService {
       .maybeSingle();
 
     if (live?.reference) {
+      if ((live.status ?? '').toString().toLowerCase() === 'pending') {
+        const snippe = await this.checkPayoutStatusFromSnippe(reference);
+        if (snippe?.status && snippe.status !== 'pending') {
+          const status = snippe.status === 'completed' || snippe.status === 'success' ? 'completed' : 'failed';
+          await this.syncPayoutStatusInDb(reference, status);
+          const { data: updated } = await client
+            .from('withdrawal_requests')
+            .select('reference, status, amount, net_amount, fee_amount, created_at')
+            .eq('reference', reference)
+            .eq('user_id', userId)
+            .maybeSingle();
+          if (updated) return { type: 'live', ...updated };
+        }
+      }
       return { type: 'live', ...live };
     }
 
@@ -928,6 +942,20 @@ export class PaymentsService {
       .maybeSingle();
 
     if (shop?.reference) {
+      if ((shop.status ?? '').toString().toLowerCase() === 'pending') {
+        const snippe = await this.checkPayoutStatusFromSnippe(reference);
+        if (snippe?.status && snippe.status !== 'pending') {
+          const status = snippe.status === 'completed' || snippe.status === 'success' ? 'completed' : 'failed';
+          await this.syncPayoutStatusInDb(reference, status);
+          const { data: updated } = await client
+            .from('withdrawals')
+            .select('reference, status, amount, net_amount, fee_amount, created_at')
+            .eq('reference', reference)
+            .eq('user_id', userId)
+            .maybeSingle();
+          if (updated) return { type: 'shop', ...updated };
+        }
+      }
       return { type: 'shop', ...shop };
     }
 
@@ -1064,8 +1092,9 @@ export class PaymentsService {
         rowsUpdated: updateResult.data?.length || 0,
       });
 
-      // Handle payout webhooks
-      if (eventType?.toString().startsWith('payout.')) {
+      // Handle payout webhooks (payout.completed, payout.failed, payout.reversed, payout.updated, etc.)
+      const payoutEvent = eventType?.toString().toLowerCase();
+      if (payoutEvent?.startsWith('payout.') || payoutEvent === 'transfer.completed' || payoutEvent === 'transfer.failed') {
         await this.handlePayoutWebhook(reference, eventType, webhookData);
         return { received: true, eventType, reference, status };
       }
@@ -1107,14 +1136,43 @@ export class PaymentsService {
     }
   }
 
-  private async handlePayoutWebhook(reference: string, eventType: string, webhookData: any) {
-    const client = this.supabase.getClient();
-    const payoutStatus =
-      eventType === 'payout.completed' ? 'completed' :
-      eventType === 'payout.failed' || eventType === 'payout.reversed' ? 'failed' :
-      webhookData?.status || 'pending';
+  /**
+   * Fetch payout status from Snippe API (used when webhook is missed or not configured).
+   */
+  private async checkPayoutStatusFromSnippe(reference: string): Promise<{ status: string } | null> {
+    if (!this.apiKey) return null;
+    try {
+      const url = `${this.apiUrl}/payouts/${reference}`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const payload = data?.data ?? data;
+        const status = (payload?.status ?? data?.status)?.toString()?.toLowerCase();
+        if (status) return { status };
+      }
+      const listUrl = `${this.apiUrl}/payouts/`;
+      const listRes = await fetch(listUrl, {
+        headers: { 'Authorization': `Bearer ${this.apiKey}` },
+      });
+      if (listRes.ok) {
+        const listData = await listRes.json();
+        const list = listData?.data?.payouts ?? listData?.payouts ?? [];
+        const found = list.find((p: any) => (p.reference ?? p.id) === reference);
+        if (found?.status) return { status: String(found.status).toLowerCase() };
+      }
+      return null;
+    } catch (e: any) {
+      this.logger.warn(`Check payout status from Snippe failed for ${reference}: ${e?.message}`);
+      return null;
+    }
+  }
 
-    // Update shop withdrawals
+  /** Update withdrawals/withdrawal_requests and optional refunds by reference and status. */
+  private async syncPayoutStatusInDb(reference: string, payoutStatus: string) {
+    const client = this.supabase.getClient();
+
     const { data: shopWithdrawal } = await client
       .from('withdrawals')
       .select('id, shop_id, amount, status')
@@ -1135,7 +1193,6 @@ export class PaymentsService {
       }
     }
 
-    // Update live reward withdrawals
     const { data: withdrawal } = await client
       .from('withdrawal_requests')
       .select('id, user_id, amount, status')
@@ -1159,7 +1216,6 @@ export class PaymentsService {
           p_user_id: withdrawal.user_id,
           p_amount: withdrawal.amount,
         });
-
         await client.from('coin_transactions').insert({
           user_id: withdrawal.user_id,
           amount: Math.abs(withdrawal.amount),
@@ -1168,12 +1224,24 @@ export class PaymentsService {
           reference,
           metadata: { reason: 'payout_failed' },
         });
-
         if (typeof newBalance === 'number') {
           await this.syncFirestoreWallet(withdrawal.user_id, newBalance);
         }
       }
     }
+  }
+
+  private async handlePayoutWebhook(reference: string, eventType: string, webhookData: any) {
+    const ev = (eventType ?? '').toString().toLowerCase();
+    const bodyStatus = (webhookData?.status ?? '').toString().toLowerCase();
+    const payoutStatus =
+      ev === 'payout.completed' || ev === 'transfer.completed' || bodyStatus === 'completed' || bodyStatus === 'success'
+        ? 'completed'
+        : ev === 'payout.failed' || ev === 'payout.reversed' || ev === 'transfer.failed' || bodyStatus === 'failed' || bodyStatus === 'reversed'
+          ? 'failed'
+          : bodyStatus || 'pending';
+    this.logger.log(`Payout webhook: reference=${reference} eventType=${eventType} -> status=${payoutStatus}`);
+    await this.syncPayoutStatusInDb(reference, payoutStatus);
   }
 
   private async handleCompletedPayment(reference: string, payload: any) {
