@@ -465,6 +465,63 @@ export class PaymentsService {
   }
 
   /**
+   * Check and update all pending withdrawals (shop + live) from Snippe.
+   * Runs every 2 minutes so older pending payouts get status updated even if webhook missed.
+   */
+  @Cron('0 */2 * * * *') // every 2 minutes
+  async checkPendingWithdrawals() {
+    if (!this.apiKey) {
+      this.logger.warn('Snippe API key not configured, skipping withdrawal status check');
+      return;
+    }
+
+    const client = this.supabase.getClient();
+
+    // Pending shop withdrawals (any age)
+    const { data: pendingShop } = await client
+      .from('withdrawals')
+      .select('id, reference, status, created_at')
+      .eq('status', 'pending')
+      .limit(30);
+
+    // Pending live reward withdrawals
+    const { data: pendingLive } = await client
+      .from('withdrawal_requests')
+      .select('id, reference, status, created_at')
+      .eq('status', 'pending')
+      .limit(30);
+
+    const refs = new Set<string>();
+    (pendingShop || []).forEach((r: any) => r?.reference && refs.add(r.reference));
+    (pendingLive || []).forEach((r: any) => r?.reference && refs.add(r.reference));
+
+    if (refs.size === 0) {
+      return;
+    }
+
+    this.logger.log(`🔄 Checking ${refs.size} pending withdrawal(s)...`);
+
+    let updated = 0;
+    for (const reference of refs) {
+      try {
+        const snippe = await this.checkPayoutStatusFromSnippe(reference);
+        if (snippe?.status && snippe.status !== 'pending') {
+          const status = snippe.status === 'completed' || snippe.status === 'success' ? 'completed' : 'failed';
+          await this.syncPayoutStatusInDb(reference, status);
+          updated++;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      } catch (e: any) {
+        this.logger.warn(`Check withdrawal ${reference} failed: ${e?.message}`);
+      }
+    }
+
+    if (updated > 0) {
+      this.logger.log(`✅ Withdrawal check: ${updated} updated to final status`);
+    }
+  }
+
+  /**
    * Expire pending payments older than 1 day
    */
   @Cron(CronExpression.EVERY_MINUTE)
