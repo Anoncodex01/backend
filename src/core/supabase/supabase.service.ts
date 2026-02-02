@@ -508,12 +508,26 @@ export class SupabaseService implements OnModuleInit {
     title: string;
     body: string;
     data?: Record<string, any>;
+    actorId?: string;
+    actorUsername?: string;
+    actorAvatar?: string;
+    postId?: string;
+    postThumbnail?: string;
+    liveId?: string;
+    communityId?: string;
   }) {
     const { error } = await this.client.from('notifications').insert({
       user_id: data.userId,
       type: data.type,
       title: data.title,
       body: data.body,
+      actor_id: data.actorId,
+      actor_username: data.actorUsername,
+      actor_avatar: data.actorAvatar,
+      post_id: data.postId,
+      post_thumbnail: data.postThumbnail,
+      live_id: data.liveId,
+      community_id: data.communityId,
       data: data.data || {},
       is_read: false,
     });

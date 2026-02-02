@@ -689,8 +689,8 @@ export class PaymentsService {
     narration?: string;
   }) {
     const minAmount = 10000;
-    const feeRate = 0.1;
-    const withdrawFeeRate = 0.03;
+    const feeRate = 0.10; // 10% total withdrawal fee
+    const withdrawFeeRate = 0;
     if (dto.amount < minAmount) {
       throw new BadRequestException(`Minimum withdrawal is ${minAmount}`);
     }
@@ -736,12 +736,13 @@ export class PaymentsService {
     }
 
     const idempotencyKey = uuidv4();
+    const recipientPhone = this.normalizePhoneForPayout(payoutMethod.phone);
     const payoutPayload = {
       amount: netAmount,
       channel: 'mobile',
-      recipient_phone: payoutMethod.phone,
-      recipient_name: payoutMethod.full_name,
-      narration: dto.narration || `Shop withdrawal ${shop.shop_name || ''}`.trim(),
+      recipient_phone: recipientPhone,
+      recipient_name: (payoutMethod.full_name || '').trim(),
+      narration: (dto.narration || `Shop withdrawal ${shop.shop_name || ''}`.trim()).slice(0, 255),
       webhook_url: this.payoutWebhookUrl || undefined,
       metadata: {
         shop_id: shop.id,
@@ -754,7 +755,13 @@ export class PaymentsService {
       },
     };
 
-    const payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
+    let payoutResponse: any;
+    try {
+      payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
+    } catch (err: any) {
+      this.logger.error(`Shop withdrawal Snippe failed: ${err?.message}`, err?.stack);
+      throw err;
+    }
     const payoutData = payoutResponse?.data || payoutResponse;
     const reference = payoutData?.reference || payoutData?.data?.reference;
     const status = payoutData?.status || 'pending';
@@ -1898,8 +1905,18 @@ export class PaymentsService {
     return json;
   }
 
+  /** Normalize Tanzania phone to E.164 (255...) for Snippe. */
+  private normalizePhoneForPayout(phone: string): string {
+    let digits = (phone || '').replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    if (digits.length === 9) return '255' + digits;
+    if (digits.length === 12 && digits.startsWith('255')) return digits;
+    return phone;
+  }
+
   private async postToSnippePayout(payload: Record<string, any>, idempotencyKey: string): Promise<any> {
     const url = `${this.apiUrl}/payouts/send`;
+    this.logger.log(`Payout request: amount=${payload.amount} channel=${payload.channel} recipient_phone=${payload.recipient_phone?.replace(/\d(?=\d{4})/g, '*')}`);
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -1912,7 +1929,8 @@ export class PaymentsService {
 
     const json = await res.json();
     if (!res.ok) {
-      throw new BadRequestException(json?.message || 'Payout creation failed');
+      this.logger.warn(`Snippe payout error ${res.status}: ${JSON.stringify(json)}`);
+      throw new BadRequestException(json?.message || json?.error || 'Payout creation failed');
     }
     return json;
   }

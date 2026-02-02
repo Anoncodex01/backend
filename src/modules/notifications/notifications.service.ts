@@ -11,6 +11,13 @@ interface NotificationPayload {
   body: string;
   data?: Record<string, any>;
   imageUrl?: string;
+  actorId?: string;
+  actorUsername?: string;
+  actorAvatar?: string;
+  postId?: string;
+  postThumbnail?: string;
+  liveId?: string;
+  communityId?: string;
 }
 
 @Injectable()
@@ -92,6 +99,10 @@ export class NotificationsService {
       title: 'New Like',
       body: `${data.likerName} liked your video`,
       imageUrl: actorImage,
+      actorId: data.likerId,
+      actorUsername: data.likerName,
+      actorAvatar: actorImage,
+      postId: data.postId,
       data: { postId: data.postId, userId: data.likerId },
     });
   }
@@ -117,6 +128,10 @@ export class NotificationsService {
       title: 'New Comment',
       body: `${data.commenterName}: ${data.commentPreview.substring(0, 50)}`,
       imageUrl: actorImage,
+      actorId: data.commenterId,
+      actorUsername: data.commenterName,
+      actorAvatar: actorImage,
+      postId: data.postId,
       data: { postId: data.postId, userId: data.commenterId },
     });
   }
@@ -137,6 +152,9 @@ export class NotificationsService {
       title: 'New Follower',
       body: `${data.followerName} started following you`,
       imageUrl: actorImage,
+      actorId: data.followerId,
+      actorUsername: data.followerName,
+      actorAvatar: actorImage,
       data: { userId: data.followerId },
     });
   }
@@ -187,12 +205,17 @@ export class NotificationsService {
     messagePreview: string;
     conversationId: string;
   }) {
+    const actorImage = await this.getUserProfileImage(data.senderId);
+
     await this.sendPushNotification({
       userId: data.recipientId,
       type: 'message',
       title: data.senderName,
       body: data.messagePreview.substring(0, 100),
       imageUrl: undefined,
+      actorId: data.senderId,
+      actorUsername: data.senderName,
+      actorAvatar: actorImage,
       data: {
         conversationId: data.conversationId,
         senderId: data.senderId,
