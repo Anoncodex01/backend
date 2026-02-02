@@ -723,6 +723,46 @@ export class PaymentsService {
       throw new BadRequestException('Please add a shop payout method in settings');
     }
 
+    // Use same available balance as UI: delivered orders total - completed withdrawals
+    const { data: revenueRows } = await client
+      .from('orders')
+      .select('total_amount')
+      .eq('shop_id', shop.id)
+      .eq('status', 'delivered');
+    const revenue = (revenueRows || []).reduce((s, r) => s + Number(r?.total_amount ?? 0), 0);
+
+    const { data: withdrawnRows } = await client
+      .from('withdrawals')
+      .select('amount')
+      .eq('shop_id', shop.id)
+      .eq('status', 'completed');
+    const withdrawn = (withdrawnRows || []).reduce((s, w) => s + Number(w?.amount ?? 0), 0);
+
+    const availableBalance = revenue - withdrawn;
+    if (availableBalance < dto.amount) {
+      throw new BadRequestException('Not enough shop balance');
+    }
+
+    // Ensure shop_wallets is in sync with revenue - withdrawals (e.g. if wallet was never credited)
+    const { data: walletRow } = await client
+      .from('shop_wallets')
+      .select('balance')
+      .eq('shop_id', shop.id)
+      .maybeSingle();
+    const walletBalance = Number(walletRow?.balance ?? 0);
+    if (walletBalance < dto.amount) {
+      const topUp = availableBalance - walletBalance;
+      if (topUp > 0) {
+        const { error: syncErr } = await client.rpc('increment_shop_balance', {
+          p_shop_id: shop.id,
+          p_amount: topUp,
+        });
+        if (syncErr) {
+          this.logger.warn('Shop wallet sync before withdrawal failed:', syncErr?.message);
+        }
+      }
+    }
+
     const { data: newBalance, error: balanceError } = await client.rpc('decrement_shop_balance', {
       p_shop_id: shop.id,
       p_amount: dto.amount,
