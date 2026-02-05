@@ -127,18 +127,20 @@ export class UsersService {
   }
 
   /**
-   * Get user's posts with caching
+   * Get user's posts with caching (optional video-only for profile Videos tab)
    */
   async getUserPosts(userId: string, options: {
     limit?: number;
     offset?: number;
     isPublic?: boolean;
+    videoOnly?: boolean;
   } = {}) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
     const isPublic = options.isPublic ?? true;
-    
-    const cacheKey = `user:posts:${userId}:${isPublic}:${offset}:${limit}`;
+    const videoOnly = options.videoOnly ?? false;
+
+    const cacheKey = `user:posts:${userId}:${isPublic}:${offset}:${limit}:${videoOnly}`;
 
     let posts: any[] | null = null;
     try {
@@ -152,11 +154,11 @@ export class UsersService {
         limit,
         offset,
         isPublic,
+        videoOnly,
       });
-      
-      // Cache for 2 minutes (posts update more frequently)
+
       try {
-      await this.redisService.setJson(cacheKey, posts, 120);
+        await this.redisService.setJson(cacheKey, posts, 120);
       } catch (error) {
         console.warn('Redis cache write failed, continuing without cache:', error);
       }

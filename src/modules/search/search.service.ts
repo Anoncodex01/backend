@@ -38,20 +38,27 @@ export class SearchService {
   /**
    * Search posts with caching
    */
-  async searchPosts(query: string, limit = 20, offset = 0) {
+  async searchPosts(query: string, limit = 20, offset = 0, videoOnly = false) {
     if (!query || query.length < 2) return [];
 
     const normalizedQuery = query.toLowerCase().trim();
-    const cacheKey = `search:posts:${normalizedQuery}:${offset}:${limit}`;
+    const cacheKey = `search:posts:${normalizedQuery}:${offset}:${limit}:${videoOnly}`;
 
     let results = await this.redisService.getJson<any[]>(cacheKey);
 
     if (!results) {
-      results = await this.supabaseService.searchPosts(normalizedQuery, limit, offset);
+      results = await this.supabaseService.searchPosts(normalizedQuery, limit, offset, videoOnly);
       await this.redisService.setJson(cacheKey, results, this.searchTtl);
     }
 
     return results;
+  }
+
+  /**
+   * Search video posts only (for reels/search screen when clicking video tab)
+   */
+  async searchVideos(query: string, limit = 20, offset = 0) {
+    return this.searchPosts(query, limit, offset, true);
   }
 
   /**

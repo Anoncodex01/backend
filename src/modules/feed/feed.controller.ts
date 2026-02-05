@@ -6,6 +6,8 @@ import {
   Post,
   UseGuards,
   Headers,
+  ParseBoolPipe,
+  DefaultValuePipe,
 } from '@nestjs/common';
 import { FeedService } from './feed.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
@@ -30,6 +32,7 @@ export class FeedController {
     @Query('tab') tab: 'foryou' | 'following' | 'trending' = 'foryou',
     @Query('limit') limit: number = 20,
     @Query('offset') offset: number = 0,
+    @Query('cursor') queryCursor?: string,
     @Headers('authorization') authHeader?: string,
   ) {
     // Extract user ID if authenticated
@@ -46,6 +49,7 @@ export class FeedController {
 
     let posts: any[];
 
+    let nextCursor: string | undefined;
     switch (tab) {
       case 'following':
         if (!userId) {
@@ -58,9 +62,12 @@ export class FeedController {
         posts = await this.feedService.getFollowingFeed({ userId, limit, offset });
         break;
 
-      case 'trending':
-        posts = await this.feedService.getTrendingFeed({ userId, limit });
+      case 'trending': {
+        const cursor = typeof queryCursor === 'string' ? queryCursor : undefined;
+        posts = await this.feedService.getTrendingFeed({ userId, limit, offset, cursor });
+        nextCursor = posts.length >= limit && posts.length > 0 ? (posts[posts.length - 1] as any).created_at : undefined;
         break;
+      }
 
       case 'foryou':
       default:
@@ -77,6 +84,92 @@ export class FeedController {
         offset,
         count: posts.length,
         hasMore: posts.length === limit,
+        ...(nextCursor && { nextCursor }),
+      },
+    };
+  }
+
+  /**
+   * GET /v1/feed/profile/:userId
+   * Profile posts (optionally video-only), Redis cached
+   */
+  @Get('profile/:userId')
+  async getProfileFeed(
+    @Param('userId') profileUserId: string,
+    @Query('limit') limit: number = 20,
+    @Query('offset') offset: number = 0,
+    @Query('videoOnly', new ParseBoolPipe({ optional: true })) videoOnly?: boolean,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // Continue as anonymous
+      }
+    }
+
+    const posts = await this.feedService.getProfileFeed({
+      profileUserId,
+      userId,
+      limit,
+      offset,
+      videoOnly: videoOnly ?? false,
+    });
+
+    return {
+      success: true,
+      data: posts,
+      meta: {
+        profileUserId,
+        limit,
+        offset,
+        videoOnly,
+        count: posts.length,
+        hasMore: posts.length === limit,
+      },
+    };
+  }
+
+  /**
+   * GET /v1/feed/reels
+   * Reels feed (video-only, cursor pagination, first page cached)
+   */
+  @Get('reels')
+  async getReels(
+    @Query('limit') limit: number = 20,
+    @Query('offset') offset: number = 0,
+    @Query('cursor') cursor?: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // Continue as anonymous
+      }
+    }
+
+    const posts = await this.feedService.getReelsFeed({ userId, limit, offset, cursor });
+    const nextCursor = posts.length >= limit && posts.length > 0
+      ? (posts[posts.length - 1] as any).created_at
+      : undefined;
+
+    return {
+      success: true,
+      data: posts,
+      meta: {
+        limit,
+        offset,
+        count: posts.length,
+        hasMore: posts.length === limit,
+        nextCursor,
       },
     };
   }

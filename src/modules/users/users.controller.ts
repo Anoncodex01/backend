@@ -6,6 +6,7 @@ import {
   Headers,
   Post,
   UseGuards,
+  ParseBoolPipe,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { AuthService } from '../auth/auth.service';
@@ -81,9 +82,9 @@ export class UsersController {
     @Query('limit') limit: number = 20,
     @Query('offset') offset: number = 0,
     @Query('public') isPublic: string = 'true',
+    @Query('videoOnly', new ParseBoolPipe({ optional: true })) videoOnly?: boolean,
     @Headers('authorization') authHeader?: string,
   ) {
-    // Only allow private posts for the owner
     let requestingUserId: string | undefined;
     if (authHeader?.startsWith('Bearer ')) {
       try {
@@ -95,13 +96,13 @@ export class UsersController {
       }
     }
 
-    // Non-owners can only see public posts
     const publicOnly = isPublic === 'true' || requestingUserId !== userId;
 
     const posts = await this.usersService.getUserPosts(userId, {
       limit,
       offset,
       isPublic: publicOnly,
+      videoOnly: videoOnly ?? false,
     });
 
     return {
@@ -111,6 +112,7 @@ export class UsersController {
         userId,
         limit,
         offset,
+        videoOnly: videoOnly ?? false,
         count: posts.length,
         hasMore: posts.length === limit,
       },

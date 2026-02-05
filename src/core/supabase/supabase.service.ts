@@ -60,23 +60,32 @@ export class SupabaseService implements OnModuleInit {
   async getUserPosts(userId: string, options: {
     limit?: number;
     offset?: number;
+    cursor?: string;
     isPublic?: boolean;
+    videoOnly?: boolean;
   } = {}) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
 
     let query = this.client
       .from('posts')
-      .select('*')
+      .select(SupabaseService.FEED_POST_SELECT)
       .eq('user_id', userId)
-      .eq('is_draft', false) // Exclude drafts - only owner can see their drafts on their own profile
-      .order('created_at', { ascending: false });
+      .eq('is_draft', false)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
 
     if (options.isPublic !== undefined) {
       query = query.eq('is_public', options.isPublic);
     }
-
-    query = query.range(offset, offset + limit - 1);
+    if (options.videoOnly) {
+      query = query.or('video_url.not.is.null,stream_uid.not.is.null');
+    }
+    if (options.cursor) {
+      query = query.lt('created_at', options.cursor).limit(limit);
+    } else {
+      query = query.range(offset, offset + limit - 1);
+    }
 
     const { data, error } = await query;
     if (error) throw error;
@@ -160,25 +169,29 @@ export class SupabaseService implements OnModuleInit {
     return data || [];
   }
 
-  async searchPosts(query: string, limit = 20, offset = 0) {
-    const { data, error } = await this.client
+  async searchPosts(query: string, limit = 20, offset = 0, videoOnly = false) {
+    let queryBuilder = this.client
       .from('posts')
-      .select('*')
+      .select(SupabaseService.FEED_POST_SELECT)
       .eq('is_public', true)
-      .eq('is_draft', false) // Exclude drafts
+      .eq('is_draft', false)
       .ilike('caption', `%${query}%`)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
+    if (videoOnly) {
+      queryBuilder = queryBuilder.or('video_url.not.is.null,stream_uid.not.is.null');
+    }
+
+    const { data, error } = await queryBuilder;
     if (error) throw error;
-    
+
     if (data && data.length > 0) {
       const userIds = [...new Set(data.map(p => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url')
         .in('id', userIds);
-      
       const userMap = new Map((users || []).map(u => [u.id, u]));
       return data.map(post => ({
         ...post,
@@ -224,54 +237,56 @@ export class SupabaseService implements OnModuleInit {
 
   // ===== Post Operations =====
 
+  /** Slim columns for feeds (faster network + parsing, no select('*')) */
+  private static readonly FEED_POST_SELECT =
+    'id,user_id,caption,created_at,video_url,stream_uid,thumbnail_url,views_count,likes_count,comments_count,is_public,post_type';
+
   async getPosts(options: {
     limit?: number;
     offset?: number;
+    cursor?: string;
     userId?: string;
     isPublic?: boolean;
     orderBy?: string;
   }) {
+    const limit = options.limit || 20;
     let query = this.client
       .from('posts')
-      .select('*')
-      .eq('is_draft', false) // Always exclude drafts from public feeds
-      .order(options.orderBy || 'created_at', { ascending: false });
+      .select(SupabaseService.FEED_POST_SELECT)
+      .eq('is_draft', false)
+      .order(options.orderBy || 'created_at', { ascending: false })
+      .order('id', { ascending: false });
 
     if (options.userId) {
       query = query.eq('user_id', options.userId);
     }
-
     if (options.isPublic !== undefined) {
       query = query.eq('is_public', options.isPublic);
     }
-
-    if (options.limit) {
-      query = query.limit(options.limit);
-    }
-
-    if (options.offset) {
-      query = query.range(options.offset, options.offset + (options.limit || 20) - 1);
+    if (options.cursor) {
+      query = query.lt('created_at', options.cursor).limit(limit);
+    } else if (options.offset !== undefined) {
+      query = query.range(options.offset, options.offset + limit - 1);
+    } else {
+      query = query.limit(limit);
     }
 
     const { data, error } = await query;
     if (error) throw error;
-    
-    // Enrich with user data
+
     if (data && data.length > 0) {
-      const userIds = [...new Set(data.map(p => p.user_id))];
+      const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url')
         .in('id', userIds);
-      
-      const userMap = new Map((users || []).map(u => [u.id, u]));
-      return data.map(post => ({
+      const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+      return data.map((post: any) => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
     }
-    
-    return data;
+    return data || [];
   }
 
   async getPost(postId: string) {
@@ -295,33 +310,77 @@ export class SupabaseService implements OnModuleInit {
     return data;
   }
 
-  async getTrendingPosts(limit = 20) {
-    const { data, error } = await this.client
+  async getTrendingPosts(limit = 20, offset = 0, cursor?: string) {
+    let query = this.client
       .from('posts')
-      .select('*')
+      .select(SupabaseService.FEED_POST_SELECT)
       .eq('is_public', true)
-      .eq('is_draft', false) // Exclude drafts
+      .eq('is_draft', false)
       .order('views_count', { ascending: false })
       .order('likes_count', { ascending: false })
-      .limit(limit);
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
 
+    if (cursor) {
+      query = query.lt('created_at', cursor).limit(limit);
+    } else {
+      query = query.range(offset, offset + limit - 1);
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    
+
     if (data && data.length > 0) {
-      const userIds = [...new Set(data.map(p => p.user_id))];
+      const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url')
         .in('id', userIds);
-      
-      const userMap = new Map((users || []).map(u => [u.id, u]));
-      return data.map(post => ({
+      const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+      return data.map((post: any) => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
     }
-    
-    return data;
+    return data || [];
+  }
+
+  /**
+   * Get reels feed: video-only posts (slim select, cursor pagination)
+   */
+  async getReelsPosts(limit = 20, offset = 0, cursor?: string) {
+    let query = this.client
+      .from('posts')
+      .select(SupabaseService.FEED_POST_SELECT)
+      .eq('is_public', true)
+      .eq('is_draft', false)
+      .or('video_url.not.is.null,stream_uid.not.is.null')
+      .order('views_count', { ascending: false })
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
+
+    if (cursor) {
+      query = query.lt('created_at', cursor).limit(limit);
+    } else {
+      query = query.range(offset, offset + limit - 1);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    if (data && data.length > 0) {
+      const userIds = [...new Set(data.map((p: any) => p.user_id))];
+      const { data: users } = await this.client
+        .from('users')
+        .select('id, username, full_name, profile_image_url')
+        .in('id', userIds);
+      const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+      return data.map((post: any) => ({
+        ...post,
+        user: userMap.get(post.user_id) || null
+      }));
+    }
+    return data || [];
   }
 
   // ===== Like/Save Status =====

@@ -7,6 +7,7 @@ import { SupabaseService } from '../../core/supabase/supabase.service';
 export class FeedService {
   private feedTtl: number;
   private trendingTtl: number;
+  private reelsTtl: number;
 
   constructor(
     private redisService: RedisService,
@@ -15,6 +16,7 @@ export class FeedService {
   ) {
     this.feedTtl = this.configService.get('CACHE_FEED_TTL', 30);
     this.trendingTtl = this.configService.get('CACHE_TRENDING_TTL', 120);
+    this.reelsTtl = this.configService.get('CACHE_REELS_TTL', 60);
   }
 
   /**
@@ -108,28 +110,122 @@ export class FeedService {
   }
 
   /**
-   * Get trending posts
+   * Get trending posts (cursor pagination; cache first page only)
    */
   async getTrendingFeed(options: {
     userId?: string;
     limit?: number;
+    offset?: number;
+    cursor?: string;
   }) {
     const limit = options.limit || 20;
-    const cacheKey = `feed:trending:${limit}`;
+    const offset = options.offset || 0;
+    const cursor = options.cursor;
+    const isFirstPage = !cursor && offset === 0;
+    const cacheKey = 'feed:trending:page1';
+
+    let posts: any[] | null = null;
+    if (isFirstPage) {
+      try {
+        posts = await this.redisService.getJson<any[]>(cacheKey);
+      } catch (error) {
+        console.warn('Redis cache read failed, falling back to database:', error);
+      }
+    }
+
+    if (!posts) {
+      posts = await this.supabaseService.getTrendingPosts(limit, offset, cursor);
+      if (isFirstPage) {
+        try {
+          await this.redisService.setJson(cacheKey, posts, this.trendingTtl);
+        } catch (error) {
+          console.warn('Redis cache write failed:', error);
+        }
+      }
+    }
+
+    if (options.userId && posts && posts.length > 0) {
+      posts = await this.enrichPostsWithUserStatus(posts, options.userId);
+    }
+
+    return posts || [];
+  }
+
+  /**
+   * Get profile posts (user's posts, optional video-only) – cached for profile/screen
+   */
+  async getProfileFeed(options: {
+    profileUserId: string;
+    userId?: string;
+    limit?: number;
+    offset?: number;
+    videoOnly?: boolean;
+  }) {
+    const limit = options.limit || 20;
+    const offset = options.offset || 0;
+    const videoOnly = options.videoOnly ?? false;
+    const cacheKey = `feed:profile:${options.profileUserId}:${offset}:${limit}:${videoOnly}`;
 
     let posts: any[] | null = null;
     try {
       posts = await this.redisService.getJson<any[]>(cacheKey);
     } catch (error) {
-      console.warn('Redis cache read failed, falling back to database:', error);
+      console.warn('Redis profile cache read failed, falling back to database:', error);
     }
 
     if (!posts) {
-      posts = await this.supabaseService.getTrendingPosts(limit);
+      posts = await this.supabaseService.getUserPosts(options.profileUserId, {
+        limit,
+        offset,
+        isPublic: true,
+        videoOnly,
+      });
       try {
-      await this.redisService.setJson(cacheKey, posts, this.trendingTtl);
+        await this.redisService.setJson(cacheKey, posts, 60); // 1 min
       } catch (error) {
-        console.warn('Redis cache write failed, continuing without cache:', error);
+        console.warn('Redis profile cache write failed:', error);
+      }
+    }
+
+    if (options.userId && posts && posts.length > 0) {
+      posts = await this.enrichPostsWithUserStatus(posts, options.userId);
+    }
+
+    return posts || [];
+  }
+
+  /**
+   * Get reels feed (video-only, cursor pagination; cache first page only)
+   */
+  async getReelsFeed(options: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+    cursor?: string;
+  }) {
+    const limit = options.limit || 20;
+    const offset = options.offset || 0;
+    const cursor = options.cursor;
+    const isFirstPage = !cursor && offset === 0;
+    const cacheKey = 'feed:reels:page1';
+
+    let posts: any[] | null = null;
+    if (isFirstPage) {
+      try {
+        posts = await this.redisService.getJson<any[]>(cacheKey);
+      } catch (error) {
+        console.warn('Redis reels cache read failed, falling back to database:', error);
+      }
+    }
+
+    if (!posts) {
+      posts = await this.supabaseService.getReelsPosts(limit, offset, cursor);
+      if (isFirstPage) {
+        try {
+          await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
+        } catch (error) {
+          console.warn('Redis reels cache write failed:', error);
+        }
       }
     }
 
@@ -199,8 +295,9 @@ export class FeedService {
    */
   async invalidateFeedCache() {
     try {
-    await this.redisService.deletePattern('feed:foryou:*');
-    await this.redisService.deletePattern('feed:trending:*');
+      await this.redisService.deletePattern('feed:foryou:*');
+      await this.redisService.del('feed:trending:page1');
+      await this.redisService.del('feed:reels:page1');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }

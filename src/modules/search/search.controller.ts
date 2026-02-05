@@ -3,6 +3,7 @@ import {
   Get,
   Query,
   Headers,
+  ParseBoolPipe,
 } from '@nestjs/common';
 import { SearchService } from './search.service';
 import { AuthService } from '../auth/auth.service';
@@ -100,10 +101,45 @@ export class SearchController {
 
   /**
    * GET /v1/search/posts
-   * Search posts only (cached)
+   * Search posts only (cached). Use type=video for video-only.
    */
   @Get('posts')
   async searchPosts(
+    @Query('q') query: string,
+    @Query('limit') limit: number = 20,
+    @Query('offset') offset: number = 0,
+    @Query('videoOnly', new ParseBoolPipe({ optional: true })) videoOnly?: boolean,
+  ) {
+    if (!query || query.length < 2) {
+      return {
+        success: true,
+        data: [],
+        message: 'Query too short',
+      };
+    }
+
+    const posts = await this.searchService.searchPosts(query, limit, offset, videoOnly ?? false);
+
+    return {
+      success: true,
+      data: posts,
+      meta: {
+        query,
+        limit,
+        offset,
+        videoOnly: videoOnly ?? false,
+        count: posts.length,
+        hasMore: posts.length === limit,
+      },
+    };
+  }
+
+  /**
+   * GET /v1/search/videos
+   * Search video posts only (cached, for reels/search video tab)
+   */
+  @Get('videos')
+  async searchVideos(
     @Query('q') query: string,
     @Query('limit') limit: number = 20,
     @Query('offset') offset: number = 0,
@@ -116,7 +152,7 @@ export class SearchController {
       };
     }
 
-    const posts = await this.searchService.searchPosts(query, limit, offset);
+    const posts = await this.searchService.searchVideos(query, limit, offset);
 
     return {
       success: true,

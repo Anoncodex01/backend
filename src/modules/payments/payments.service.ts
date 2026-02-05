@@ -606,6 +606,7 @@ export class PaymentsService {
 
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
+    const minAmountTzs = 5000; // Minimum live rewards payout
     try {
       const payoutRate = 0.75;
       const feeRate = 0.25;
@@ -613,6 +614,9 @@ export class PaymentsService {
       const amountTzs = Number(dto.amount || 0);
       if (amountTzs <= 0) {
         throw new BadRequestException('Invalid withdrawal amount');
+      }
+      if (amountTzs < minAmountTzs) {
+        throw new BadRequestException(`Minimum withdrawal is TZS ${minAmountTzs.toLocaleString()}`);
       }
       if (this.coinRate <= 0) {
         throw new BadRequestException('Coin rate not configured');
