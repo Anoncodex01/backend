@@ -93,11 +93,70 @@ const PRIVACY_POLICY_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const DELETE_ACCOUNT_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Request account &amp; data deletion – WhapVibez</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; background: #f8f9fa; padding: 20px; }
+    .container { max-width: 640px; margin: 0 auto; background: #fff; padding: 40px; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+    h1 { font-size: 24px; margin-bottom: 8px; color: #111; }
+    h2 { font-size: 17px; margin-top: 24px; margin-bottom: 8px; color: #222; }
+    p, li { margin-bottom: 10px; }
+    ul { margin-left: 20px; }
+    a { color: #DD3030; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: #f8f9fa; border-radius: 10px; padding: 16px; margin: 16px 0; }
+    .email { font-weight: 600; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Request account &amp; data deletion</h1>
+    <p>You can request that your WhapVibez account and associated data be deleted at any time. We process deletions by anonymizing your personal data (we do not retain identifiable information; we may keep anonymized records for audit and legal compliance).</p>
+
+    <h2>Option 1: Delete in the app (recommended)</h2>
+    <p>If you have the WhapVibez app installed:</p>
+    <ul>
+      <li>Open the app and sign in.</li>
+      <li>Go to <strong>Profile → Settings</strong>.</li>
+      <li>Tap <strong>Delete account</strong> and follow the confirmation.</li>
+    </ul>
+    <p>Your account and associated data will be anonymized immediately. You can later sign up again with the same email or username if you wish.</p>
+
+    <h2>Option 2: Request by email</h2>
+    <p>If you no longer have the app or prefer to request deletion by email, send a message from the email address associated with your account to:</p>
+    <div class="card">
+      <p class="email"><a href="mailto:privacy@whapvibez.com?subject=Delete%20my%20WhapVibez%20account">privacy@whapvibez.com</a></p>
+      <p style="margin-top:8px;font-size:14px;color:#666;">Subject: Delete my WhapVibez account</p>
+    </div>
+    <p>Include the email address of the account you want deleted. We will process your request and anonymize your account and associated data in line with our <a href="/v1/legal/privacy-policy">Privacy Policy</a>.</p>
+
+    <h2>What we do when you delete</h2>
+    <ul>
+      <li>We anonymize your profile (username, email, name, bio, photo, etc.) and shop data so you are no longer identifiable.</li>
+      <li>We do not retain your personal data; anonymized records may be kept only where required for audit or law.</li>
+      <li>After deletion, you may create a new account with the same email or username.</li>
+    </ul>
+    <p style="margin-top:24px;">For more details, see our <a href="/v1/legal/privacy-policy">Privacy Policy</a>.</p>
+  </div>
+</body>
+</html>`;
+
 @Controller('legal')
 export class LegalController {
   @Get('privacy-policy')
   @Header('Content-Type', 'text/html; charset=utf-8')
   privacyPolicy(@Res() res: Response) {
     return res.status(200).send(PRIVACY_POLICY_HTML);
+  }
+
+  @Get('delete-account')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  deleteAccount(@Res() res: Response) {
+    return res.status(200).send(DELETE_ACCOUNT_HTML);
   }
 }
