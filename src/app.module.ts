@@ -25,8 +25,9 @@ import { AdminModule } from './modules/admin/admin.module';
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
 
-// Health
+// Health & Legal
 import { HealthController } from './health.controller';
+import { LegalController } from './legal.controller';
 
 @Module({
   imports: [
@@ -61,7 +62,7 @@ import { HealthController } from './health.controller';
     PaymentsModule,
     AdminModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, LegalController],
   providers: [RealtimeGateway],
 })
 export class AppModule {}

@@ -258,6 +258,21 @@ export class UsersService {
   }
 
   /**
+   * Delete account by anonymizing PII (Google Play compliance).
+   * Keeps user id and records for audit; removes identifiable data.
+   */
+  async anonymizeAccount(userId: string): Promise<void> {
+    await this.supabaseService.anonymizeUser(userId);
+    await this.invalidateProfile(userId);
+    try {
+      await this.redisService.deletePattern(`user:followers:${userId}:*`);
+      await this.redisService.deletePattern(`user:following:${userId}:*`);
+    } catch (error) {
+      console.warn('Redis cache invalidation failed:', error);
+    }
+  }
+
+  /**
    * Invalidate follow cache (after follow/unfollow)
    */
   async invalidateFollowCache(followerId: string, followingId: string) {

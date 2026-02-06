@@ -38,6 +38,20 @@ export class UsersController {
   }
 
   /**
+   * POST /v1/users/delete-account
+   * Anonymize account (delete PII, keep records for audit). Google Play compliance.
+   */
+  @Post('delete-account')
+  @UseGuards(AuthGuard)
+  async deleteAccount(@CurrentUser() user: any) {
+    await this.usersService.anonymizeAccount(user.sub);
+    return {
+      success: true,
+      message: 'Account has been deleted. You have been signed out.',
+    };
+  }
+
+  /**
    * GET /v1/users/username/:username
    * Get user profile by username (cached)
    */

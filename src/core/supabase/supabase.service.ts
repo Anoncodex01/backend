@@ -57,6 +57,61 @@ export class SupabaseService implements OnModuleInit {
     return data;
   }
 
+  /**
+   * Anonymize a user for account deletion (Google Play compliance).
+   * Keeps user id and records for audit; removes PII from users + shops.
+   * Auth email is updated so the user cannot log in again.
+   * Original email and username are freed so the user can sign up again with the same email/username.
+   */
+  async anonymizeUser(userId: string): Promise<void> {
+    const shortId = userId.replace(/-/g, '').slice(0, 12);
+    const anonymizedEmail = `deleted_${shortId}@anonymized.local`;
+    const anonymizedUsername = `deleted_${shortId}`;
+
+    const { error: userError } = await this.client
+      .from('users')
+      .update({
+        email: anonymizedEmail,
+        username: anonymizedUsername,
+        full_name: 'Deleted User',
+        bio: null,
+        profile_image_url: null,
+        phone_number: null,
+        website: null,
+        location: null,
+        dob: null,
+        gender: null,
+        category: null,
+        deleted_at: new Date().toISOString(),
+        is_anonymized: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
+
+    if (userError) throw userError;
+
+    const { error: shopError } = await this.client
+      .from('shops')
+      .update({
+        shop_name: 'Deleted Shop',
+        description: null,
+        logo_url: null,
+        banner_url: null,
+        anonymized_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId);
+
+    if (shopError) throw shopError;
+
+    const { error: authError } = await this.client.auth.admin.updateUserById(
+      userId,
+      { email: anonymizedEmail },
+    );
+
+    if (authError) throw authError;
+  }
+
   async getUserPosts(userId: string, options: {
     limit?: number;
     offset?: number;
