@@ -65,12 +65,12 @@ const PRIVACY_POLICY_HTML = `<!DOCTYPE html>
     </ul>
 
     <h2>5. Data Retention</h2>
-    <p>We retain your information for as long as your account is active or as needed to provide you services, comply with legal obligations, resolve disputes, and enforce our agreements. If you delete your account (see below), we anonymize your personal data while retaining non-identifying records where required for audit or legal purposes.</p>
+    <p>We retain your information for as long as your account is active or as needed to provide you services, comply with legal obligations, resolve disputes, and enforce our agreements. If you delete your account (see below), we delete your personal data as described in this policy.</p>
 
     <h2>6. Your Rights and Choices</h2>
     <ul>
       <li><strong>Access and correction:</strong> You can access and update your profile and account information in the app settings.</li>
-      <li><strong>Delete account:</strong> You may request deletion of your account at any time via <strong>Settings → Delete account</strong>. We will anonymize your personal data (e.g. username, email, profile, shop name) so you are no longer identifiable, while we may retain anonymized records for audit and legal compliance. After anonymization, you may sign up again with the same email or username.</li>
+      <li><strong>Delete account:</strong> You may request deletion of your account at any time via <strong>Settings → Delete account</strong>. We will delete your personal data (e.g. username, email, profile, shop name). After deletion, you may sign up again with the same email or username.</li>
       <li><strong>Privacy settings:</strong> You can control who can message you, see your online status, and view your content using in-app privacy settings.</li>
       <li><strong>Notifications:</strong> You can manage push and in-app notification preferences in your device and app settings.</li>
       <li><strong>Location:</strong> You can disable location access in your device settings or when the app prompts you.</li>
@@ -116,7 +116,7 @@ const DELETE_ACCOUNT_HTML = `<!DOCTYPE html>
 <body>
   <div class="container">
     <h1>Request account &amp; data deletion</h1>
-    <p>You can request that your WhapVibez account and associated data be deleted at any time. We process deletions by anonymizing your personal data (we do not retain identifiable information; we may keep anonymized records for audit and legal compliance).</p>
+    <p>You can request that your WhapVibez account and associated data be deleted at any time. We will delete your information as requested.</p>
 
     <h2>Option 1: Delete in the app (recommended)</h2>
     <p>If you have the WhapVibez app installed:</p>
@@ -125,7 +125,7 @@ const DELETE_ACCOUNT_HTML = `<!DOCTYPE html>
       <li>Go to <strong>Profile → Settings</strong>.</li>
       <li>Tap <strong>Delete account</strong> and follow the confirmation.</li>
     </ul>
-    <p>Your account and associated data will be anonymized immediately. You can later sign up again with the same email or username if you wish.</p>
+    <p>Your account and associated data will be deleted. You can later sign up again with the same email or username if you wish.</p>
 
     <h2>Option 2: Request by email</h2>
     <p>If you no longer have the app or prefer to request deletion by email, send a message from the email address associated with your account to:</p>
@@ -133,12 +133,12 @@ const DELETE_ACCOUNT_HTML = `<!DOCTYPE html>
       <p class="email"><a href="mailto:privacy@whapvibez.com?subject=Delete%20my%20WhapVibez%20account">privacy@whapvibez.com</a></p>
       <p style="margin-top:8px;font-size:14px;color:#666;">Subject: Delete my WhapVibez account</p>
     </div>
-    <p>Include the email address of the account you want deleted. We will process your request and anonymize your account and associated data in line with our <a href="/v1/legal/privacy-policy">Privacy Policy</a>.</p>
+    <p>Include the email address of the account you want deleted. We will process your request and delete your account and associated data in line with our <a href="/v1/legal/privacy-policy">Privacy Policy</a>.</p>
 
     <h2>What we do when you delete</h2>
     <ul>
-      <li>We anonymize your profile (username, email, name, bio, photo, etc.) and shop data so you are no longer identifiable.</li>
-      <li>We do not retain your personal data; anonymized records may be kept only where required for audit or law.</li>
+      <li>We delete your profile (username, email, name, bio, photo, etc.) and shop data.</li>
+      <li>We do not retain your personal data after deletion.</li>
       <li>After deletion, you may create a new account with the same email or username.</li>
     </ul>
     <p style="margin-top:24px;">For more details, see our <a href="/v1/legal/privacy-policy">Privacy Policy</a>.</p>
