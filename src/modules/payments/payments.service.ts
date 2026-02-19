@@ -606,17 +606,18 @@ export class PaymentsService {
 
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
-    const minAmountTzs = 5000; // Minimum live rewards payout
+    const snippeMinPayout = 5000; // Snippe API minimum (we send netAmount, so must ensure netAmount >= this)
+    const withdrawFeeRate = 0.03;
+    const minAmountTzs = Math.ceil(snippeMinPayout / (1 - withdrawFeeRate)); // ~5155 so netAmount >= 5000
     try {
       const payoutRate = 0.75;
       const feeRate = 0.25;
-      const withdrawFeeRate = 0.03;
       const amountTzs = Number(dto.amount || 0);
       if (amountTzs <= 0) {
         throw new BadRequestException('Invalid withdrawal amount');
       }
       if (amountTzs < minAmountTzs) {
-        throw new BadRequestException(`Minimum withdrawal is TZS ${minAmountTzs.toLocaleString()}`);
+        throw new BadRequestException(`Minimum withdrawal is TZS ${minAmountTzs.toLocaleString()} (Snippe minimum TZS ${snippeMinPayout.toLocaleString()} after fees)`);
       }
       if (this.coinRate <= 0) {
         throw new BadRequestException('Coin rate not configured');
@@ -642,6 +643,10 @@ export class PaymentsService {
         throw new BadRequestException('Please add a payout method in settings');
       }
 
+      if (netAmount < snippeMinPayout) {
+        throw new BadRequestException(`Amount after fees (TZS ${Math.floor(netAmount).toLocaleString()}) is below provider minimum (TZS ${snippeMinPayout.toLocaleString()}). Please request at least TZS ${minAmountTzs.toLocaleString()}.`);
+      }
+
       const { data: newBalance, error } = await client.rpc('decrement_coin_balance', {
         p_user_id: userId,
         p_amount: coinsRequired,
@@ -651,11 +656,12 @@ export class PaymentsService {
       }
 
       const idempotencyKey = uuidv4();
+      const recipientPhone = this.normalizePhoneForPayout(payoutMethod.phone);
       const payoutPayload = {
-        amount: netAmount,
+        amount: Math.round(netAmount),
         channel: 'mobile',
-        recipient_phone: payoutMethod.phone,
-        recipient_name: payoutMethod.full_name,
+        recipient_phone: recipientPhone,
+        recipient_name: (payoutMethod.full_name || '').trim(),
         narration: 'Live rewards withdrawal',
         webhook_url: this.payoutWebhookUrl || undefined,
         metadata: {
