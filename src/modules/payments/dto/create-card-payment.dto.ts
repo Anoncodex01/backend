@@ -41,6 +41,10 @@ export class CreateCardPaymentDto {
   redirectUrl: string;
 
   @IsOptional()
+  @IsString()
+  cancelUrl?: string;
+
+  @IsOptional()
   metadata?: Record<string, any>;
 
   @IsOptional()

@@ -197,12 +197,14 @@ export class PaymentsService {
       ...(dto.metadata || {}),
     };
 
+    const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
     const payload = {
       payment_type: 'card',
       details: {
         amount: dto.amount,
         currency: dto.currency,
         redirect_url: dto.redirectUrl,
+        cancel_url: cancelUrl,
       },
       phone_number: dto.phoneNumber,
       customer: {
