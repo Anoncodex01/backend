@@ -1209,31 +1209,49 @@ export class PaymentsService {
   private async checkPayoutStatusFromSnippe(reference: string): Promise<{ status: string } | null> {
     if (!this.apiKey) return null;
     try {
+      // Try GET /payouts/:reference first
       const url = `${this.apiUrl}/payouts/${reference}`;
       const res = await fetch(url, {
         headers: { 'Authorization': `Bearer ${this.apiKey}` },
       });
-      if (res.ok) {
-        const data = await res.json();
-        const payload = data?.data ?? data;
-        const status = (payload?.status ?? data?.status)?.toString()?.toLowerCase();
-        if (status) return { status };
+      const raw = await res.json().catch(() => ({}));
+      const status = this.extractPayoutStatus(raw);
+      if (status) {
+        this.logger.log(`Snippe payout ${reference} status: ${status}`);
+        return { status };
       }
-      const listUrl = `${this.apiUrl}/payouts/`;
+      // Fallback: list payouts and find by reference
+      const listUrl = `${this.apiUrl}/payouts`;
       const listRes = await fetch(listUrl, {
         headers: { 'Authorization': `Bearer ${this.apiKey}` },
       });
       if (listRes.ok) {
-        const listData = await listRes.json();
-        const list = listData?.data?.payouts ?? listData?.payouts ?? [];
-        const found = list.find((p: any) => (p.reference ?? p.id) === reference);
-        if (found?.status) return { status: String(found.status).toLowerCase() };
+        const listRaw = await listRes.json().catch(() => ({}));
+        const list = listRaw?.data?.payouts ?? listRaw?.data ?? listRaw?.payouts ?? (Array.isArray(listRaw) ? listRaw : []);
+        const found = Array.isArray(list) ? list.find((p: any) => (p.reference ?? p.id ?? p.reference_id) === reference) : null;
+        if (found) {
+          const foundStatus = this.extractPayoutStatus(found) ?? this.extractPayoutStatus({ data: found });
+          if (foundStatus) {
+            this.logger.log(`Snippe payout ${reference} status (from list): ${foundStatus}`);
+            return { status: foundStatus };
+          }
+        }
       }
       return null;
     } catch (e: any) {
       this.logger.warn(`Check payout status from Snippe failed for ${reference}: ${e?.message}`);
       return null;
     }
+  }
+
+  /** Extract and normalize payout status from various Snippe response shapes. */
+  private extractPayoutStatus(obj: any): string | null {
+    if (!obj) return null;
+    const s = (obj?.data?.status ?? obj?.status ?? obj?.data?.state ?? obj?.state)?.toString()?.toLowerCase();
+    if (!s) return null;
+    if (['completed', 'success', 'delivered', 'paid', 'done', 'settled'].includes(s)) return 'completed';
+    if (['failed', 'reversed', 'rejected', 'expired', 'voided', 'cancelled'].includes(s)) return 'failed';
+    return s;
   }
 
   /** Update withdrawals/withdrawal_requests and optional refunds by reference and status. */
