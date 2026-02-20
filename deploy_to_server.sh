@@ -26,9 +26,14 @@ run_on_server() {
 }
 
 echo ""
-echo "📦 Step 1: Syncing files to server..."
-rsync -avz --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.env' \
-    ./ "$VPS_USER@$VPS_HOST:$APP_DIR/"
+echo "📦 Step 1: Syncing files to server (SCP)..."
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+for item in src nginx package.json package-lock.json tsconfig.json nest-cli.json Dockerfile docker-compose.yml; do
+  if [ -e "$item" ]; then
+    echo "   Syncing $item..."
+    sshpass -p "$VPS_PASS" scp $SSH_OPTS -r "$item" "$VPS_USER@$VPS_HOST:$APP_DIR/"
+  fi
+done
 
 echo ""
 echo "🔨 Step 2: Building Docker image on server..."

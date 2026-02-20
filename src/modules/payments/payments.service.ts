@@ -608,32 +608,31 @@ export class PaymentsService {
 
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
-    const snippeMinPayout = 5000; // Snippe API minimum (we send netAmount, so must ensure netAmount >= this)
+    const snippeMinPayout = 5000; // Snippe API minimum payout amount
+    const platformFeeRate = 0.25;
     const withdrawFeeRate = 0.03;
-    const minAmountTzs = Math.ceil(snippeMinPayout / (1 - withdrawFeeRate)); // ~5155 so netAmount >= 5000
+    const totalFeeRate = platformFeeRate + withdrawFeeRate; // 28%
+    const minAmountTzs = 5155; // Business minimum displayed in app
     try {
-      const payoutRate = 0.75;
-      const feeRate = 0.25;
       const amountTzs = Number(dto.amount || 0);
       if (amountTzs <= 0) {
         throw new BadRequestException('Invalid withdrawal amount');
       }
       if (amountTzs < minAmountTzs) {
-        throw new BadRequestException(`Minimum withdrawal is TZS ${minAmountTzs.toLocaleString()} (Snippe minimum TZS ${snippeMinPayout.toLocaleString()} after fees)`);
+        throw new BadRequestException(`Minimum withdrawal is TZS ${minAmountTzs.toLocaleString()}`);
       }
       if (this.coinRate <= 0) {
         throw new BadRequestException('Coin rate not configured');
       }
 
-      const coinsRequired = Math.ceil((amountTzs / payoutRate) * this.coinRate);
-      const grossAmount = amountTzs / payoutRate;
-      const platformFeeAmount = grossAmount * feeRate;
+      // Deduct requested amount + fees from wallet balance.
+      const grossAmount = amountTzs;
+      const platformFeeAmount = amountTzs * platformFeeRate;
       const withdrawFeeAmount = amountTzs * withdrawFeeRate;
       const feeAmount = platformFeeAmount + withdrawFeeAmount;
-      const netAmount = amountTzs - withdrawFeeAmount;
-      if (netAmount <= 0) {
-        throw new BadRequestException('Invalid withdrawal amount');
-      }
+      const totalDeductionTzs = amountTzs * (1 + totalFeeRate);
+      const netAmount = amountTzs;
+      const coinsRequired = Math.ceil(totalDeductionTzs * this.coinRate);
 
       const { data: payoutMethod } = await client
         .from('user_payout_methods')
@@ -646,7 +645,19 @@ export class PaymentsService {
       }
 
       if (netAmount < snippeMinPayout) {
-        throw new BadRequestException(`Amount after fees (TZS ${Math.floor(netAmount).toLocaleString()}) is below provider minimum (TZS ${snippeMinPayout.toLocaleString()}). Please request at least TZS ${minAmountTzs.toLocaleString()}.`);
+        throw new BadRequestException(`Minimum withdrawal is TZS ${Math.max(minAmountTzs, snippeMinPayout).toLocaleString()}`);
+      }
+
+      const { data: walletRow } = await client
+        .from('coin_wallets')
+        .select('balance')
+        .eq('user_id', userId)
+        .maybeSingle();
+      const availableCoins = Number(walletRow?.balance ?? 0);
+      if (availableCoins < coinsRequired) {
+        throw new BadRequestException(
+          `Not enough reward balance. Required: ${coinsRequired.toLocaleString()} coins (TZS ${Math.ceil(totalDeductionTzs).toLocaleString()} incl. 25% platform + 3% withdraw fee). Available: ${availableCoins.toLocaleString()} coins.`,
+        );
       }
 
       const { data: newBalance, error } = await client.rpc('decrement_coin_balance', {
@@ -669,6 +680,7 @@ export class PaymentsService {
         metadata: {
           user_id: userId,
           gross_amount: grossAmount,
+          total_deduction_tzs: totalDeductionTzs,
           platform_fee_amount: platformFeeAmount,
           withdraw_fee_amount: withdrawFeeAmount,
           fee_amount: feeAmount,
@@ -678,12 +690,34 @@ export class PaymentsService {
         },
       };
 
-      const payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
-      const payoutData = payoutResponse?.data || payoutResponse;
-      const reference = payoutData?.reference || payoutData?.data?.reference;
-      const status = payoutData?.status || 'pending';
+      let payoutResponse: any;
+      try {
+        payoutResponse = await this.postToSnippePayout(payoutPayload, idempotencyKey);
+      } catch (payoutErr: any) {
+        // Payout request failed -> refund deducted coins immediately.
+        const { data: refundedBalance } = await client.rpc('increment_coin_balance', {
+          p_user_id: userId,
+          p_amount: coinsRequired,
+        });
+        await client.from('coin_transactions').insert({
+          user_id: userId,
+          amount: Math.abs(coinsRequired),
+          type: 'adjustment',
+          status: 'completed',
+          reference: idempotencyKey,
+          metadata: { reason: 'payout_request_failed_refund' },
+        });
+        if (typeof refundedBalance === 'number') {
+          await this.syncFirestoreWallet(userId, refundedBalance);
+        }
+        throw new BadRequestException(payoutErr?.message || 'Unable to create withdrawal');
+      }
 
-      await client.from('withdrawal_requests').insert({
+      const payoutData = payoutResponse?.data || payoutResponse;
+      const reference = payoutData?.reference || payoutData?.data?.reference || idempotencyKey;
+      const status = this.extractPayoutStatus(payoutData) || payoutData?.status || 'pending';
+
+      const { error: withdrawalError } = await client.from('withdrawal_requests').insert({
         user_id: userId,
         amount: coinsRequired,
         currency: 'TZS',
@@ -696,8 +730,9 @@ export class PaymentsService {
         net_amount: netAmount,
         metadata: {
           ...(dto.metadata || {}),
-          payout_rate: payoutRate,
           gross_amount: grossAmount,
+          total_deduction_tzs: totalDeductionTzs,
+          total_fee_rate: totalFeeRate,
           platform_fee_amount: platformFeeAmount,
           withdraw_fee_amount: withdrawFeeAmount,
           coin_amount: coinsRequired,
@@ -705,8 +740,11 @@ export class PaymentsService {
           recipient_name: payoutMethod.full_name,
         },
       });
+      if (withdrawalError) {
+        this.logger.error(`Failed to store withdrawal request ${reference}: ${withdrawalError.message}`);
+      }
 
-      await client.from('coin_transactions').insert({
+      const { error: txError } = await client.from('coin_transactions').insert({
         user_id: userId,
         amount: -Math.abs(coinsRequired),
         type: 'withdraw',
@@ -716,11 +754,15 @@ export class PaymentsService {
           ...(dto.metadata || {}),
           net_amount: netAmount,
           gross_amount: grossAmount,
+          total_deduction_tzs: totalDeductionTzs,
           platform_fee_amount: platformFeeAmount,
           withdraw_fee_amount: withdrawFeeAmount,
           fee_amount: feeAmount,
         },
       });
+      if (txError) {
+        this.logger.error(`Failed to store withdrawal coin transaction ${reference}: ${txError.message}`);
+      }
 
       if (typeof newBalance === 'number') {
         await this.syncFirestoreWallet(userId, newBalance);
