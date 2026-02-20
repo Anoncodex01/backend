@@ -207,7 +207,7 @@ export class FeedService {
     const offset = options.offset || 0;
     const cursor = options.cursor;
     const isFirstPage = !cursor && offset === 0;
-    const cacheKey = 'feed:reels:page1';
+    const cacheKey = `feed:reels:page1:${limit}`;
 
     let posts: any[] | null = null;
     if (isFirstPage) {
@@ -297,7 +297,7 @@ export class FeedService {
     try {
       await this.redisService.deletePattern('feed:foryou:*');
       await this.redisService.del('feed:trending:page1');
-      await this.redisService.del('feed:reels:page1');
+      await this.redisService.deletePattern('feed:reels:page1:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -376,4 +376,3 @@ export class FeedService {
     }
   }
 }
-

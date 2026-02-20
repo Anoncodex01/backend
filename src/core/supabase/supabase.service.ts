@@ -134,7 +134,7 @@ export class SupabaseService implements OnModuleInit {
       query = query.eq('is_public', options.isPublic);
     }
     if (options.videoOnly) {
-      query = query.or('video_url.not.is.null,stream_uid.not.is.null');
+      query = query.or('video_url.not.is.null,video_path.not.is.null,stream_uid.not.is.null');
     }
     if (options.cursor) {
       query = query.lt('created_at', options.cursor).limit(limit);
@@ -235,7 +235,7 @@ export class SupabaseService implements OnModuleInit {
       .range(offset, offset + limit - 1);
 
     if (videoOnly) {
-      queryBuilder = queryBuilder.or('video_url.not.is.null,stream_uid.not.is.null');
+      queryBuilder = queryBuilder.or('video_url.not.is.null,video_path.not.is.null,stream_uid.not.is.null');
     }
 
     const { data, error } = await queryBuilder;
@@ -294,7 +294,7 @@ export class SupabaseService implements OnModuleInit {
 
   /** Slim columns for feeds (faster network + parsing, no select('*')) */
   private static readonly FEED_POST_SELECT =
-    'id,user_id,caption,created_at,video_url,stream_uid,thumbnail_url,views_count,likes_count,comments_count,is_public,post_type';
+    'id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,views_count,likes_count,comments_count,is_public,post_type';
 
   async getPosts(options: {
     limit?: number;
@@ -409,7 +409,7 @@ export class SupabaseService implements OnModuleInit {
       .select(SupabaseService.FEED_POST_SELECT)
       .eq('is_public', true)
       .eq('is_draft', false)
-      .or('video_url.not.is.null,stream_uid.not.is.null')
+      .or('video_url.not.is.null,video_path.not.is.null,stream_uid.not.is.null')
       .order('views_count', { ascending: false })
       .order('created_at', { ascending: false })
       .order('id', { ascending: false });

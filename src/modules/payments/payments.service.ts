@@ -1396,19 +1396,22 @@ export class PaymentsService {
         return;
       }
 
-      // Calculate coins based on payment amount and coin rate
-      // Handle both old format (payload.amount) and new format (payload.amount.value)
+      // Use expected coins from bundle metadata when present, otherwise calculate from amount × rate
       const paymentAmount = Number(
-        payload.amount?.value || 
-        payload.amount || 
-        finalIntent.amount || 
+        payload.amount?.value ||
+        payload.amount ||
+        finalIntent.amount ||
         0
       );
-      const coins = Math.floor(paymentAmount * this.coinRate);
-      
+      const expectedCoins = Number(metadata.coins) || 0;
+      const coins = expectedCoins > 0
+        ? expectedCoins
+        : Math.floor(paymentAmount * this.coinRate);
+
       this.logger.log(`💰 Converting payment to coins:`, {
         paymentAmount,
         coinRate: this.coinRate,
+        expectedCoins: expectedCoins || undefined,
         coins,
       });
 
@@ -1596,7 +1599,10 @@ export class PaymentsService {
         .maybeSingle();
 
       if (!existingAdjustment) {
-        const coins = Math.floor(paymentAmount * this.coinRate);
+        const expectedCoins = Number(metadata.coins) || 0;
+        const coins = expectedCoins > 0
+          ? expectedCoins
+          : Math.floor(paymentAmount * this.coinRate);
         try {
           await client.rpc('decrement_coin_balance', {
             p_user_id: userId,
