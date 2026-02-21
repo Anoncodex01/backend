@@ -399,6 +399,14 @@ export class PaymentsService {
       await this.handleReversedPayment(reference, intent, snippePayment);
     }
 
+    // If payment failed/expired and order is still pending, cancel that order.
+    if (['failed', 'reversed', 'voided', 'expired', 'cancelled'].includes(newStatus)) {
+      const orderId = intent?.metadata?.order_id || snippePayment?.metadata?.order_id;
+      if (orderId) {
+        await this.markOrderAsUnpaidAndCancel(orderId, `payment_${newStatus}`);
+      }
+    }
+
     return { reference, status: newStatus, updated: true };
   }
 
@@ -529,11 +537,13 @@ export class PaymentsService {
   @Cron(CronExpression.EVERY_MINUTE)
   async expireStalePayments() {
     const client = this.supabase.getClient();
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const timeoutMinutes = Number(this.config.get<string>('ORDER_PAYMENT_TIMEOUT_MIN', '30'));
+    const safeTimeoutMinutes = Number.isFinite(timeoutMinutes) && timeoutMinutes > 0 ? timeoutMinutes : 30;
+    const cutoff = new Date(Date.now() - safeTimeoutMinutes * 60 * 1000).toISOString();
     await this.logAdminEvent({
       category: 'cron',
       message: 'expireStalePayments',
-      metadata: { cutoff },
+      metadata: { cutoff, timeoutMinutes: safeTimeoutMinutes },
     });
     try {
       const { data, error } = await client
@@ -544,7 +554,7 @@ export class PaymentsService {
         })
         .in('status', ['pending', 'processing'])
         .lt('created_at', cutoff)
-        .select('reference');
+        .select('reference, metadata');
 
       if (error) {
         this.logger.error('Error expiring stale payments:', error);
@@ -553,9 +563,38 @@ export class PaymentsService {
 
       if ((data || []).length > 0) {
         this.logger.log(`⏱️ Expired ${data?.length} stale payments`);
+        for (const row of data || []) {
+          const orderId = (row as any)?.metadata?.order_id;
+          if (orderId) {
+            await this.markOrderAsUnpaidAndCancel(orderId, 'payment_expired_timeout');
+          }
+        }
       }
     } catch (e: any) {
       this.logger.error('Error in expireStalePayments:', e.message);
+    }
+  }
+
+  private async markOrderAsUnpaidAndCancel(orderId: string, reason: string) {
+    if (!orderId) return;
+    const client = this.supabase.getClient();
+    try {
+      const { error } = await client
+        .from('orders')
+        .update({
+          status: 'cancelled',
+          payment_issue: true,
+          payment_issue_reason: reason,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', orderId)
+        .eq('status', 'pending');
+
+      if (error) {
+        this.logger.warn(`Failed to cancel unpaid order ${orderId}: ${error.message}`);
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to cancel unpaid order ${orderId}: ${e?.message}`);
     }
   }
 

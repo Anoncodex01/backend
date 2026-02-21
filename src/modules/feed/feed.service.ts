@@ -202,15 +202,17 @@ export class FeedService {
     limit?: number;
     offset?: number;
     cursor?: string;
+    fresh?: boolean;
   }) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
     const cursor = options.cursor;
+    const fresh = options.fresh === true;
     const isFirstPage = !cursor && offset === 0;
     const cacheKey = `feed:reels:page1:${limit}`;
 
     let posts: any[] | null = null;
-    if (isFirstPage) {
+    if (isFirstPage && !fresh) {
       try {
         posts = await this.redisService.getJson<any[]>(cacheKey);
       } catch (error) {
@@ -220,7 +222,7 @@ export class FeedService {
 
     if (!posts) {
       posts = await this.supabaseService.getReelsPosts(limit, offset, cursor);
-      if (isFirstPage) {
+      if (isFirstPage && !fresh) {
         try {
           await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
         } catch (error) {

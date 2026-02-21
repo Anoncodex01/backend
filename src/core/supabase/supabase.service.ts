@@ -410,8 +410,8 @@ export class SupabaseService implements OnModuleInit {
       .eq('is_public', true)
       .eq('is_draft', false)
       .or('video_url.not.is.null,video_path.not.is.null,stream_uid.not.is.null')
-      .order('views_count', { ascending: false })
       .order('created_at', { ascending: false })
+      .order('views_count', { ascending: false })
       .order('id', { ascending: false });
 
     if (cursor) {
@@ -860,4 +860,3 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
   }
 }
-

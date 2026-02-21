@@ -143,6 +143,7 @@ export class FeedController {
     @Query('limit') limit: number = 20,
     @Query('offset') offset: number = 0,
     @Query('cursor') cursor?: string,
+    @Query('fresh') fresh?: string,
     @Headers('authorization') authHeader?: string,
   ) {
     let userId: string | undefined;
@@ -156,7 +157,8 @@ export class FeedController {
       }
     }
 
-    const posts = await this.feedService.getReelsFeed({ userId, limit, offset, cursor });
+    const forceFresh = fresh === '1' || fresh?.toLowerCase() == 'true';
+    const posts = await this.feedService.getReelsFeed({ userId, limit, offset, cursor, fresh: forceFresh });
     const nextCursor = posts.length >= limit && posts.length > 0
       ? (posts[posts.length - 1] as any).created_at
       : undefined;
@@ -244,4 +246,3 @@ export class FeedController {
     };
   }
 }
-
