@@ -316,8 +316,9 @@ export class PaymentsService {
         .maybeSingle();
 
       const fullName = (user?.full_name || user?.username || 'Whapvibez User').toString().trim();
-      const firstName = dto.customerFirstName || fullName.split(' ').first || 'Whapvibez';
-      const lastName = dto.customerLastName || fullName.split(' ').skip(1).join(' ') || 'User';
+      const nameParts = fullName.split(/\s+/).filter(Boolean);
+      const firstName = dto.customerFirstName || nameParts[0] || 'Whapvibez';
+      const lastName = dto.customerLastName || nameParts.slice(1).join(' ') || 'User';
       const customerEmail = dto.customerEmail || user?.email || 'support@whapvibez.com';
 
       const idempotencyKey = uuidv4();
@@ -377,6 +378,9 @@ export class PaymentsService {
         response = await this.postToSnippe(payload, idempotencyKey);
       }
 
+      if (!response?.data) {
+        throw new BadRequestException('Invalid response from payment provider');
+      }
       const amountValue: any = response.data.amount;
       const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
         ? amountValue.value
