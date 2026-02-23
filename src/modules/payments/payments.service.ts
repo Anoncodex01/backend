@@ -289,49 +289,49 @@ export class PaymentsService {
   }
 
   async subscribeVerification(userId: string, dto: CreateVerificationSubscriptionDto) {
-    const client = this.supabase.getClient();
-    const planCode = (dto.planCode || '').toLowerCase() as CreateVerificationSubscriptionDto['planCode'];
-    const plansMap = await this.getVerificationPlanMap();
-    const plan = plansMap.get(planCode);
-    if (!plan) {
-      throw new BadRequestException('Invalid verification plan');
-    }
-    if (plan.price_tzs <= 0 || plan.duration_months <= 0) {
-      throw new BadRequestException('Verification plan misconfigured');
-    }
-    if (!this.apiKey) {
-      throw new BadRequestException('Payment provider not configured');
-    }
-
-    const paymentType = (dto.paymentType || '').toLowerCase();
-    if (paymentType !== 'mobile' && paymentType !== 'card') {
-      throw new BadRequestException('Invalid payment type');
-    }
-
-    const { data: user } = await client
-      .from('users')
-      .select('full_name, username, email')
-      .eq('id', userId)
-      .maybeSingle();
-
-    const fullName = (user?.full_name || user?.username || 'Whapvibez User').toString().trim();
-    const firstName = dto.customerFirstName || fullName.split(' ').first || 'Whapvibez';
-    const lastName = dto.customerLastName || fullName.split(' ').skip(1).join(' ') || 'User';
-    const customerEmail = dto.customerEmail || user?.email || 'support@whapvibez.com';
-
-    const idempotencyKey = uuidv4();
-    const metadata = {
-      user_id: userId,
-      kind: 'verification_subscription',
-      plan_code: plan.code,
-      plan_name: plan.name,
-      plan_price_tzs: plan.price_tzs,
-      duration_months: plan.duration_months,
-      product: 'blue_tick',
-    };
-
-    let response: SnippeResponse;
     try {
+      const client = this.supabase.getClient();
+      const planCode = (dto.planCode || '').toLowerCase() as CreateVerificationSubscriptionDto['planCode'];
+      const plansMap = await this.getVerificationPlanMap();
+      const plan = plansMap.get(planCode);
+      if (!plan) {
+        throw new BadRequestException('Invalid verification plan');
+      }
+      if (plan.price_tzs <= 0 || plan.duration_months <= 0) {
+        throw new BadRequestException('Verification plan misconfigured');
+      }
+      if (!this.apiKey) {
+        throw new BadRequestException('Payment provider not configured');
+      }
+
+      const paymentType = (dto.paymentType || '').toLowerCase();
+      if (paymentType !== 'mobile' && paymentType !== 'card') {
+        throw new BadRequestException('Invalid payment type');
+      }
+
+      const { data: user } = await client
+        .from('users')
+        .select('full_name, username, email')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const fullName = (user?.full_name || user?.username || 'Whapvibez User').toString().trim();
+      const firstName = dto.customerFirstName || fullName.split(' ').first || 'Whapvibez';
+      const lastName = dto.customerLastName || fullName.split(' ').skip(1).join(' ') || 'User';
+      const customerEmail = dto.customerEmail || user?.email || 'support@whapvibez.com';
+
+      const idempotencyKey = uuidv4();
+      const metadata = {
+        user_id: userId,
+        kind: 'verification_subscription',
+        plan_code: plan.code,
+        plan_name: plan.name,
+        plan_price_tzs: plan.price_tzs,
+        duration_months: plan.duration_months,
+        product: 'blue_tick',
+      };
+
+      let response: SnippeResponse;
       if (paymentType === 'mobile') {
         if (!dto.phoneNumber) {
           throw new BadRequestException('Phone number is required for mobile payment');
@@ -376,56 +376,56 @@ export class PaymentsService {
         };
         response = await this.postToSnippe(payload, idempotencyKey);
       }
+
+      const amountValue: any = response.data.amount;
+      const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
+        ? amountValue.value
+        : typeof amountValue === 'number'
+        ? amountValue
+        : Number(amountValue) || plan.price_tzs;
+      const currencyValue: any = response.data.amount;
+      const currency = typeof currencyValue === 'object' && currencyValue !== null && 'currency' in currencyValue
+        ? currencyValue.currency
+        : response.data.currency || 'TZS';
+
+      try {
+        await this.storeIntent({
+          userId,
+          reference: response.data.reference,
+          status: response.data.status,
+          amount,
+          currency,
+          paymentType: response.data.payment_type,
+          paymentUrl: response.data.payment_url,
+          expiresAt: response.data.expires_at,
+          idempotencyKey,
+          phoneNumber: dto.phoneNumber,
+          metadata,
+        });
+      } catch (storeErr: any) {
+        // Keep flow non-fatal like other payment endpoints.
+        this.logger.warn(
+          `Verification payment intent store failed for ${response.data.reference}: ${storeErr?.message || storeErr}`,
+        );
+      }
+
+      return {
+        success: true,
+        data: {
+          plan_code: plan.code,
+          amount_tzs: plan.price_tzs,
+          payment_type: paymentType,
+          reference: response.data.reference,
+          status: response.data.status,
+          payment_url: response.data.payment_url,
+          expires_at: response.data.expires_at,
+        },
+      };
     } catch (e: any) {
       if (e instanceof BadRequestException) throw e;
-      this.logger.error(`Verification payment intent creation failed: ${e?.message || e}`);
+      this.logger.error(`subscribeVerification failed for user ${userId}: ${e?.message || e}`);
       throw new BadRequestException('Unable to start verification payment');
     }
-
-    const amountValue: any = response.data.amount;
-    const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
-      ? amountValue.value
-      : typeof amountValue === 'number'
-      ? amountValue
-      : Number(amountValue) || plan.price_tzs;
-    const currencyValue: any = response.data.amount;
-    const currency = typeof currencyValue === 'object' && currencyValue !== null && 'currency' in currencyValue
-      ? currencyValue.currency
-      : response.data.currency || 'TZS';
-
-    try {
-      await this.storeIntent({
-        userId,
-        reference: response.data.reference,
-        status: response.data.status,
-        amount,
-        currency,
-        paymentType: response.data.payment_type,
-        paymentUrl: response.data.payment_url,
-        expiresAt: response.data.expires_at,
-        idempotencyKey,
-        phoneNumber: dto.phoneNumber,
-        metadata,
-      });
-    } catch (storeErr: any) {
-      // Keep flow non-fatal like other payment endpoints.
-      this.logger.warn(
-        `Verification payment intent store failed for ${response.data.reference}: ${storeErr?.message || storeErr}`,
-      );
-    }
-
-    return {
-      success: true,
-      data: {
-        plan_code: plan.code,
-        amount_tzs: plan.price_tzs,
-        payment_type: paymentType,
-        reference: response.data.reference,
-        status: response.data.status,
-        payment_url: response.data.payment_url,
-        expires_at: response.data.expires_at,
-      },
-    };
   }
 
   private async activateVerificationSubscriptionFromPayment(input: {
@@ -2527,11 +2527,18 @@ export class PaymentsService {
       body: JSON.stringify(payload),
     });
 
-    const json = await res.json();
+    const raw = await res.text();
+    let json: any = null;
+    try {
+      json = raw ? JSON.parse(raw) : {};
+    } catch {
+      json = { message: raw || 'Invalid response from payment provider' };
+    }
+
     if (!res.ok) {
       throw new BadRequestException(json?.message || 'Payment creation failed');
     }
-    return json;
+    return json as SnippeResponse;
   }
 
   /** Normalize Tanzania phone to E.164 (255...) for Snippe. */
