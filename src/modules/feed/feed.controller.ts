@@ -157,7 +157,7 @@ export class FeedController {
       }
     }
 
-    const forceFresh = fresh === '1' || fresh?.toLowerCase() == 'true';
+    const forceFresh = fresh === '1' || fresh?.toLowerCase() === 'true';
     const posts = await this.feedService.getReelsFeed({ userId, limit, offset, cursor, fresh: forceFresh });
     const nextCursor = posts.length >= limit && posts.length > 0
       ? (posts[posts.length - 1] as any).created_at

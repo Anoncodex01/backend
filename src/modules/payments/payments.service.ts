@@ -10,6 +10,7 @@ import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
 import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
+import { CreateVerificationSubscriptionDto } from './dto/create-verification-subscription.dto';
 
 type SnippeResponse = {
   status: string;
@@ -25,9 +26,22 @@ type SnippeResponse = {
   };
 };
 
+type VerificationPlan = {
+  code: 'monthly' | '6months' | 'yearly';
+  name: string;
+  price_tzs: number;
+  duration_months: number;
+  sort_order: number;
+};
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
+  private readonly defaultVerificationPlans: VerificationPlan[] = [
+    { code: 'monthly', name: 'Blue Tick Monthly', price_tzs: 4500, duration_months: 1, sort_order: 1 },
+    { code: '6months', name: 'Blue Tick 6 Months', price_tzs: 22500, duration_months: 6, sort_order: 2 },
+    { code: 'yearly', name: 'Blue Tick Yearly', price_tzs: 40500, duration_months: 12, sort_order: 3 },
+  ];
 
   constructor(
     private config: ConfigService,
@@ -181,6 +195,278 @@ export class PaymentsService {
     }, 3000); // Check after 3 seconds
 
     return response;
+  }
+
+  private addMonths(date: Date, months: number): Date {
+    const next = new Date(date);
+    next.setMonth(next.getMonth() + months);
+    return next;
+  }
+
+  private async getVerificationPlanMap(): Promise<Map<string, VerificationPlan>> {
+    const client = this.supabase.getClient();
+    try {
+      const { data } = await client
+        .from('verification_plans')
+        .select('code, name, price_tzs, duration_months, sort_order')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true });
+
+      const rows = (data || []) as any[];
+      if (!rows.length) {
+        return new Map(this.defaultVerificationPlans.map((p) => [p.code, p]));
+      }
+
+      const plans: VerificationPlan[] = rows.map((r) => ({
+        code: r.code,
+        name: r.name,
+        price_tzs: Number(r.price_tzs || 0),
+        duration_months: Number(r.duration_months || 0),
+        sort_order: Number(r.sort_order || 0),
+      }));
+      return new Map(plans.map((p) => [p.code, p]));
+    } catch (e) {
+      this.logger.warn(`verification_plans read failed, using defaults: ${(e as any)?.message || e}`);
+      return new Map(this.defaultVerificationPlans.map((p) => [p.code, p]));
+    }
+  }
+
+  async getVerificationPlans() {
+    const plansMap = await this.getVerificationPlanMap();
+    const plans = Array.from(plansMap.values()).sort((a, b) => a.sort_order - b.sort_order);
+    return {
+      success: true,
+      data: plans,
+    };
+  }
+
+  async getVerificationStatus(userId: string) {
+    const client = this.supabase.getClient();
+    const nowIso = new Date().toISOString();
+
+    await client
+      .from('user_verification_subscriptions')
+      .update({ status: 'expired', updated_at: nowIso })
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .lte('ends_at', nowIso);
+
+    const { data: activeSub } = await client
+      .from('user_verification_subscriptions')
+      .select('id, plan_code, amount_tzs, started_at, ends_at, status, payment_reference')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .gt('ends_at', nowIso)
+      .order('ends_at', { ascending: false })
+      .maybeSingle();
+
+    const isVerified = !!activeSub;
+    try {
+      if (isVerified) {
+        await client.from('users').update({ is_verified: true }).eq('id', userId);
+      } else {
+        await client.from('users').update({ is_verified: false }).eq('id', userId);
+      }
+    } catch {
+      // Don't fail status endpoint if profile sync fails
+    }
+
+    let remainingDays = 0;
+    if (activeSub?.ends_at) {
+      const end = new Date(activeSub.ends_at);
+      const diff = end.getTime() - Date.now();
+      remainingDays = diff > 0 ? Math.ceil(diff / (1000 * 60 * 60 * 24)) : 0;
+    }
+
+    return {
+      success: true,
+      data: {
+        is_verified: isVerified,
+        subscription: activeSub || null,
+        remaining_days: remainingDays,
+      },
+    };
+  }
+
+  async subscribeVerification(userId: string, dto: CreateVerificationSubscriptionDto) {
+    const client = this.supabase.getClient();
+    const planCode = (dto.planCode || '').toLowerCase() as CreateVerificationSubscriptionDto['planCode'];
+    const plansMap = await this.getVerificationPlanMap();
+    const plan = plansMap.get(planCode);
+    if (!plan) {
+      throw new BadRequestException('Invalid verification plan');
+    }
+    if (plan.price_tzs <= 0 || plan.duration_months <= 0) {
+      throw new BadRequestException('Verification plan misconfigured');
+    }
+    if (!this.apiKey) {
+      throw new BadRequestException('Payment provider not configured');
+    }
+
+    const paymentType = (dto.paymentType || '').toLowerCase();
+    if (paymentType !== 'mobile' && paymentType !== 'card') {
+      throw new BadRequestException('Invalid payment type');
+    }
+
+    const { data: user } = await client
+      .from('users')
+      .select('full_name, username, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const fullName = (user?.full_name || user?.username || 'Whapvibez User').toString().trim();
+    const firstName = dto.customerFirstName || fullName.split(' ').first || 'Whapvibez';
+    const lastName = dto.customerLastName || fullName.split(' ').skip(1).join(' ') || 'User';
+    const customerEmail = dto.customerEmail || user?.email || 'support@whapvibez.com';
+
+    const idempotencyKey = uuidv4();
+    const metadata = {
+      user_id: userId,
+      kind: 'verification_subscription',
+      plan_code: plan.code,
+      plan_name: plan.name,
+      plan_price_tzs: plan.price_tzs,
+      duration_months: plan.duration_months,
+      product: 'blue_tick',
+    };
+
+    let response: SnippeResponse;
+    if (paymentType === 'mobile') {
+      if (!dto.phoneNumber) {
+        throw new BadRequestException('Phone number is required for mobile payment');
+      }
+      const payload = {
+        payment_type: 'mobile',
+        details: {
+          amount: plan.price_tzs,
+          currency: 'TZS',
+          callback_url: dto.callbackUrl,
+        },
+        phone_number: dto.phoneNumber,
+        customer: {
+          firstname: firstName,
+          lastname: lastName,
+          email: customerEmail,
+        },
+        webhook_url: this.webhookUrl || undefined,
+        metadata,
+      };
+      response = await this.postToSnippe(payload, idempotencyKey);
+    } else {
+      if (!dto.redirectUrl) {
+        throw new BadRequestException('redirectUrl is required for card payment');
+      }
+      const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
+      const payload = {
+        payment_type: 'card',
+        details: {
+          amount: plan.price_tzs,
+          currency: 'TZS',
+          redirect_url: dto.redirectUrl,
+          cancel_url: cancelUrl,
+        },
+        customer: {
+          firstname: firstName,
+          lastname: lastName,
+          email: customerEmail,
+        },
+        webhook_url: this.webhookUrl || undefined,
+        metadata,
+      };
+      response = await this.postToSnippe(payload, idempotencyKey);
+    }
+
+    const amountValue: any = response.data.amount;
+    const amount = typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
+      ? amountValue.value
+      : typeof amountValue === 'number'
+      ? amountValue
+      : Number(amountValue) || plan.price_tzs;
+    const currencyValue: any = response.data.amount;
+    const currency = typeof currencyValue === 'object' && currencyValue !== null && 'currency' in currencyValue
+      ? currencyValue.currency
+      : response.data.currency || 'TZS';
+
+    await this.storeIntent({
+      userId,
+      reference: response.data.reference,
+      status: response.data.status,
+      amount,
+      currency,
+      paymentType: response.data.payment_type,
+      paymentUrl: response.data.payment_url,
+      expiresAt: response.data.expires_at,
+      idempotencyKey,
+      phoneNumber: dto.phoneNumber,
+      metadata,
+    });
+
+    return {
+      success: true,
+      data: {
+        plan_code: plan.code,
+        amount_tzs: plan.price_tzs,
+        payment_type: paymentType,
+        reference: response.data.reference,
+        status: response.data.status,
+        payment_url: response.data.payment_url,
+        expires_at: response.data.expires_at,
+      },
+    };
+  }
+
+  private async activateVerificationSubscriptionFromPayment(input: {
+    userId: string;
+    reference: string;
+    amountTzs: number;
+    metadata: Record<string, any>;
+  }) {
+    const client = this.supabase.getClient();
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const planCode = (input.metadata?.plan_code || 'monthly').toString();
+    const durationMonths = Number(input.metadata?.duration_months || 1);
+    const amountTzs = Number(input.metadata?.plan_price_tzs || input.amountTzs || 0);
+
+    const { data: existing } = await client
+      .from('user_verification_subscriptions')
+      .select('id')
+      .eq('payment_reference', input.reference)
+      .maybeSingle();
+    if (existing?.id) {
+      return;
+    }
+
+    const { data: currentActive } = await client
+      .from('user_verification_subscriptions')
+      .select('id, ends_at')
+      .eq('user_id', input.userId)
+      .eq('status', 'active')
+      .gt('ends_at', nowIso)
+      .order('ends_at', { ascending: false })
+      .maybeSingle();
+
+    const startAt = currentActive?.ends_at ? new Date(currentActive.ends_at) : now;
+    const endAt = this.addMonths(startAt, durationMonths);
+
+    await client
+      .from('user_verification_subscriptions')
+      .insert({
+        user_id: input.userId,
+        plan_code: planCode,
+        amount_tzs: amountTzs,
+        status: 'active',
+        started_at: startAt.toISOString(),
+        ends_at: endAt.toISOString(),
+        payment_reference: input.reference,
+        metadata: {
+          source: 'direct_payment',
+          duration_months: durationMonths,
+          extended_from_subscription_id: currentActive?.id || null,
+        },
+      });
+
+    await client.from('users').update({ is_verified: true }).eq('id', input.userId);
   }
 
   async createCardPayment(userId: string, dto: CreateCardPaymentDto) {
@@ -572,6 +858,43 @@ export class PaymentsService {
       }
     } catch (e: any) {
       this.logger.error('Error in expireStalePayments:', e.message);
+    }
+  }
+
+  @Cron('0 */30 * * * *') // every 30 minutes
+  async syncVerificationSubscriptions() {
+    const client = this.supabase.getClient();
+    const nowIso = new Date().toISOString();
+    try {
+      const { data: expiredRows } = await client
+        .from('user_verification_subscriptions')
+        .update({ status: 'expired', updated_at: nowIso })
+        .eq('status', 'active')
+        .lte('ends_at', nowIso)
+        .select('user_id');
+
+      if (!expiredRows || expiredRows.length === 0) {
+        return;
+      }
+
+      const userIds = Array.from(new Set(expiredRows.map((r: any) => r.user_id).filter(Boolean)));
+      for (const userId of userIds) {
+        const { data: stillActive } = await client
+          .from('user_verification_subscriptions')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('status', 'active')
+          .gt('ends_at', nowIso)
+          .limit(1);
+
+        if (!stillActive || stillActive.length === 0) {
+          await client.from('users').update({ is_verified: false }).eq('id', userId);
+        }
+      }
+
+      this.logger.log(`✅ Synced verification subscriptions. Expired rows: ${expiredRows.length}`);
+    } catch (e: any) {
+      this.logger.warn(`Verification subscription sync failed: ${e?.message || e}`);
     }
   }
 
@@ -1461,6 +1784,17 @@ export class PaymentsService {
         currency: finalIntent.currency || payload.currency || 'TZS',
         metadata,
       });
+    }
+
+    if (metadata.kind === 'verification_subscription') {
+      await this.activateVerificationSubscriptionFromPayment({
+        userId,
+        reference,
+        amountTzs: Number(finalIntent.amount || payload.amount?.value || payload.amount || 0),
+        metadata,
+      });
+      this.logger.log(`✅ Verification subscription activated from payment ${reference}`);
+      return;
     }
 
     if (metadata.kind === 'coin_topup') {

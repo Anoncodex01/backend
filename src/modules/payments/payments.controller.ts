@@ -7,6 +7,7 @@ import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
 import { CreateShopWithdrawalDto } from './dto/create-shop-withdrawal.dto';
+import { CreateVerificationSubscriptionDto } from './dto/create-verification-subscription.dto';
 
 @Controller('payments')
 export class PaymentsController {
@@ -83,6 +84,27 @@ export class PaymentsController {
   @Post('gift')
   async gift(@CurrentUser() userId: string, @Body() dto: CreateGiftTransferDto) {
     return this.paymentsService.sendGift(userId, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('verification/plans')
+  async getVerificationPlans() {
+    return this.paymentsService.getVerificationPlans();
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('verification/account/status')
+  async getVerificationStatus(@CurrentUser() userId: string) {
+    return this.paymentsService.getVerificationStatus(userId);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('verification/subscribe')
+  async subscribeVerification(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateVerificationSubscriptionDto,
+  ) {
+    return this.paymentsService.subscribeVerification(userId, dto);
   }
 
   @Post('webhook')
