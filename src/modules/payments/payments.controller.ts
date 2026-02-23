@@ -107,6 +107,15 @@ export class PaymentsController {
     return this.paymentsService.subscribeVerification(userId, dto);
   }
 
+  @UseGuards(AuthGuard)
+  @Post('verification/:reference/retry-mobile')
+  async retryVerificationMobile(
+    @CurrentUser() userId: string,
+    @Param('reference') reference: string,
+  ) {
+    return this.paymentsService.retryVerificationMobilePayment(userId, reference);
+  }
+
   @Post('webhook')
   async webhook(@Req() req: any, @Headers() headers: Record<string, any>) {
     try {

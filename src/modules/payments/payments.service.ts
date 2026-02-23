@@ -38,9 +38,9 @@ type VerificationPlan = {
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
   private readonly defaultVerificationPlans: VerificationPlan[] = [
-    { code: 'monthly', name: 'Blue Tick Monthly', price_tzs: 4500, duration_months: 1, sort_order: 1 },
-    { code: '6months', name: 'Blue Tick 6 Months', price_tzs: 22500, duration_months: 6, sort_order: 2 },
-    { code: 'yearly', name: 'Blue Tick Yearly', price_tzs: 40500, duration_months: 12, sort_order: 3 },
+    { code: 'monthly', name: 'Verified Badge Monthly', price_tzs: 4500, duration_months: 1, sort_order: 1 },
+    { code: '6months', name: 'Verified Badge 6 Months', price_tzs: 22500, duration_months: 6, sort_order: 2 },
+    { code: 'yearly', name: 'Verified Badge Yearly', price_tzs: 40500, duration_months: 12, sort_order: 3 },
   ];
 
   constructor(
@@ -329,7 +329,7 @@ export class PaymentsService {
         plan_name: plan.name,
         plan_price_tzs: plan.price_tzs,
         duration_months: plan.duration_months,
-        product: 'blue_tick',
+        product: 'verified_badge',
       };
 
       let response: SnippeResponse;
@@ -430,6 +430,134 @@ export class PaymentsService {
       this.logger.error(`subscribeVerification failed for user ${userId}: ${e?.message || e}`);
       throw new BadRequestException('Unable to start verification payment');
     }
+  }
+
+  async retryVerificationMobilePayment(userId: string, reference: string) {
+    const client = this.supabase.getClient();
+    const { data: intent, error } = await client
+      .from('payment_intents')
+      .select(
+        'reference, status, amount, currency, payment_type, phone_number, metadata, user_id',
+      )
+      .eq('reference', reference)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error || !intent) {
+      throw new BadRequestException('Payment not found');
+    }
+    if (intent.payment_type !== 'mobile') {
+      throw new BadRequestException('Retry is available for mobile payments only');
+    }
+    if (intent.status === 'completed') {
+      throw new BadRequestException('Payment already completed');
+    }
+
+    const metadata = (intent.metadata || {}) as Record<string, any>;
+    if (metadata.kind !== 'verification_subscription') {
+      throw new BadRequestException('Invalid payment type for retry');
+    }
+
+    const retryCount = Number(metadata.retry_count || 0);
+    if (retryCount >= 2) {
+      throw new BadRequestException('Maximum retry attempts reached');
+    }
+
+    const phoneNumber = (intent.phone_number || '').toString().trim();
+    if (!phoneNumber) {
+      throw new BadRequestException('Phone number missing on payment');
+    }
+
+    if (!this.apiKey) {
+      throw new BadRequestException('Payment provider not configured');
+    }
+
+    const { data: user } = await client
+      .from('users')
+      .select('full_name, username, email')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const fullName = (user?.full_name || user?.username || 'Whapvibez User').toString().trim();
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
+    const firstName = nameParts[0] || 'Whapvibez';
+    const lastName = nameParts.slice(1).join(' ') || 'User';
+    const customerEmail = user?.email || 'support@whapvibez.com';
+
+    const nextMetadata = {
+      ...metadata,
+      retry_of: metadata.retry_of || reference,
+      retry_count: retryCount + 1,
+    };
+
+    const idempotencyKey = uuidv4();
+    const payload = {
+      payment_type: 'mobile',
+      details: {
+        amount: Number(metadata.plan_price_tzs || intent.amount || 0),
+        currency: intent.currency || 'TZS',
+      },
+      phone_number: phoneNumber,
+      customer: {
+        firstname: firstName,
+        lastname: lastName,
+        email: customerEmail,
+      },
+      webhook_url: this.webhookUrl || undefined,
+      metadata: nextMetadata,
+    };
+
+    const response = await this.postToSnippe(payload, idempotencyKey);
+    if (!response?.data?.reference) {
+      throw new BadRequestException('Invalid response from payment provider');
+    }
+
+    const amountValue: any = response.data.amount;
+    const amount =
+      typeof amountValue === 'object' && amountValue !== null && 'value' in amountValue
+        ? amountValue.value
+        : typeof amountValue === 'number'
+          ? amountValue
+          : Number(amountValue) || Number(intent.amount || 0);
+
+    await this.storeIntent({
+      userId,
+      reference: response.data.reference,
+      status: response.data.status || 'pending',
+      amount,
+      currency: response.data.currency || intent.currency || 'TZS',
+      paymentType: 'mobile',
+      paymentUrl: response.data.payment_url,
+      expiresAt: response.data.expires_at,
+      idempotencyKey,
+      phoneNumber,
+      metadata: nextMetadata,
+    });
+
+    await client
+      .from('payment_intents')
+      .update({
+        metadata: {
+          ...metadata,
+          retried_to: response.data.reference,
+          retry_count: retryCount + 1,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('reference', reference)
+      .eq('user_id', userId);
+
+    return {
+      success: true,
+      data: {
+        reference: response.data.reference,
+        status: response.data.status || 'pending',
+        payment_type: 'mobile',
+        payment_url: response.data.payment_url,
+        expires_at: response.data.expires_at,
+        retry_count: retryCount + 1,
+      },
+    };
   }
 
   private async activateVerificationSubscriptionFromPayment(input: {
