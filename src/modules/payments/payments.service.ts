@@ -331,49 +331,55 @@ export class PaymentsService {
     };
 
     let response: SnippeResponse;
-    if (paymentType === 'mobile') {
-      if (!dto.phoneNumber) {
-        throw new BadRequestException('Phone number is required for mobile payment');
+    try {
+      if (paymentType === 'mobile') {
+        if (!dto.phoneNumber) {
+          throw new BadRequestException('Phone number is required for mobile payment');
+        }
+        const payload = {
+          payment_type: 'mobile',
+          details: {
+            amount: plan.price_tzs,
+            currency: 'TZS',
+            callback_url: dto.callbackUrl,
+          },
+          phone_number: dto.phoneNumber,
+          customer: {
+            firstname: firstName,
+            lastname: lastName,
+            email: customerEmail,
+          },
+          webhook_url: this.webhookUrl || undefined,
+          metadata,
+        };
+        response = await this.postToSnippe(payload, idempotencyKey);
+      } else {
+        if (!dto.redirectUrl) {
+          throw new BadRequestException('redirectUrl is required for card payment');
+        }
+        const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
+        const payload = {
+          payment_type: 'card',
+          details: {
+            amount: plan.price_tzs,
+            currency: 'TZS',
+            redirect_url: dto.redirectUrl,
+            cancel_url: cancelUrl,
+          },
+          customer: {
+            firstname: firstName,
+            lastname: lastName,
+            email: customerEmail,
+          },
+          webhook_url: this.webhookUrl || undefined,
+          metadata,
+        };
+        response = await this.postToSnippe(payload, idempotencyKey);
       }
-      const payload = {
-        payment_type: 'mobile',
-        details: {
-          amount: plan.price_tzs,
-          currency: 'TZS',
-          callback_url: dto.callbackUrl,
-        },
-        phone_number: dto.phoneNumber,
-        customer: {
-          firstname: firstName,
-          lastname: lastName,
-          email: customerEmail,
-        },
-        webhook_url: this.webhookUrl || undefined,
-        metadata,
-      };
-      response = await this.postToSnippe(payload, idempotencyKey);
-    } else {
-      if (!dto.redirectUrl) {
-        throw new BadRequestException('redirectUrl is required for card payment');
-      }
-      const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
-      const payload = {
-        payment_type: 'card',
-        details: {
-          amount: plan.price_tzs,
-          currency: 'TZS',
-          redirect_url: dto.redirectUrl,
-          cancel_url: cancelUrl,
-        },
-        customer: {
-          firstname: firstName,
-          lastname: lastName,
-          email: customerEmail,
-        },
-        webhook_url: this.webhookUrl || undefined,
-        metadata,
-      };
-      response = await this.postToSnippe(payload, idempotencyKey);
+    } catch (e: any) {
+      if (e instanceof BadRequestException) throw e;
+      this.logger.error(`Verification payment intent creation failed: ${e?.message || e}`);
+      throw new BadRequestException('Unable to start verification payment');
     }
 
     const amountValue: any = response.data.amount;
@@ -387,19 +393,26 @@ export class PaymentsService {
       ? currencyValue.currency
       : response.data.currency || 'TZS';
 
-    await this.storeIntent({
-      userId,
-      reference: response.data.reference,
-      status: response.data.status,
-      amount,
-      currency,
-      paymentType: response.data.payment_type,
-      paymentUrl: response.data.payment_url,
-      expiresAt: response.data.expires_at,
-      idempotencyKey,
-      phoneNumber: dto.phoneNumber,
-      metadata,
-    });
+    try {
+      await this.storeIntent({
+        userId,
+        reference: response.data.reference,
+        status: response.data.status,
+        amount,
+        currency,
+        paymentType: response.data.payment_type,
+        paymentUrl: response.data.payment_url,
+        expiresAt: response.data.expires_at,
+        idempotencyKey,
+        phoneNumber: dto.phoneNumber,
+        metadata,
+      });
+    } catch (storeErr: any) {
+      // Keep flow non-fatal like other payment endpoints.
+      this.logger.warn(
+        `Verification payment intent store failed for ${response.data.reference}: ${storeErr?.message || storeErr}`,
+      );
+    }
 
     return {
       success: true,
