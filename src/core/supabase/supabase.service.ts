@@ -184,7 +184,7 @@ export class SupabaseService implements OnModuleInit {
       const followerIds = data.map(f => f.follower_id);
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', followerIds);
       return users || [];
     }
@@ -204,7 +204,7 @@ export class SupabaseService implements OnModuleInit {
       const followingIds = data.map(f => f.following_id);
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', followingIds);
       return users || [];
     }
@@ -216,7 +216,7 @@ export class SupabaseService implements OnModuleInit {
   async searchUsers(query: string, limit = 20, offset = 0) {
     const { data, error } = await this.client
       .from('users')
-      .select('id, username, full_name, profile_image_url')
+      .select('id, username, full_name, profile_image_url, is_verified')
       .or(`username.ilike.%${query}%,full_name.ilike.%${query}%`)
       .range(offset, offset + limit - 1);
 
@@ -245,7 +245,7 @@ export class SupabaseService implements OnModuleInit {
       const userIds = [...new Set(data.map(p => p.user_id))];
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map(u => [u.id, u]));
       return data.map(post => ({
@@ -333,7 +333,7 @@ export class SupabaseService implements OnModuleInit {
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
       return data.map((post: any) => ({
@@ -356,7 +356,7 @@ export class SupabaseService implements OnModuleInit {
     if (data && data.user_id) {
       const { data: user } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .eq('id', data.user_id)
         .single();
       return { ...data, user };
@@ -389,7 +389,7 @@ export class SupabaseService implements OnModuleInit {
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
       return data.map((post: any) => ({
@@ -427,7 +427,7 @@ export class SupabaseService implements OnModuleInit {
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
       return data.map((post: any) => ({
@@ -493,7 +493,7 @@ export class SupabaseService implements OnModuleInit {
       const userIds = [...new Set(data.map(p => p.user_id))];
       const { data: users } = await this.client
         .from('users')
-        .select('id, username, full_name, profile_image_url')
+        .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       
       const userMap = new Map((users || []).map(u => [u.id, u]));
@@ -544,7 +544,7 @@ export class SupabaseService implements OnModuleInit {
       if (sellerIds.length > 0) {
         const { data: sellers } = await this.client
           .from('users')
-          .select('id, username, full_name, profile_image_url')
+          .select('id, username, full_name, profile_image_url, is_verified')
           .in('id', sellerIds);
         
         const sellerMap = new Map((sellers || []).map(s => [s.id, s]));
@@ -666,7 +666,7 @@ export class SupabaseService implements OnModuleInit {
       if (hostIds.length > 0) {
         const { data: hosts } = await this.client
           .from('users')
-          .select('id, username, full_name, profile_image_url')
+          .select('id, username, full_name, profile_image_url, is_verified')
           .in('id', hostIds);
         
         const hostMap = new Map((hosts || []).map(h => [h.id, h]));
