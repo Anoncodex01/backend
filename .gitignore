@@ -36,5 +36,9 @@ coverage/
 # Temporary files
 tmp/
 temp/
+<<<<<<< HEAD
+
 node_modules
+=======
 *.tmp
+>>>>>>> 3e6f96f0 (Add backend folder)

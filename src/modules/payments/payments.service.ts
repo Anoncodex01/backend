@@ -580,6 +580,17 @@ export class PaymentsService {
         );
       }
 
+      // Fallback for providers/environments where webhook delivery is delayed.
+      setTimeout(async () => {
+        try {
+          await this.checkAndUpdatePaymentStatus(response.data.reference);
+        } catch (e: any) {
+          this.logger.debug(
+            `Verification immediate status check failed for ${response.data.reference}: ${e?.message || e}`,
+          );
+        }
+      }, 3000);
+
       return {
         success: true,
         data: {
@@ -1030,7 +1041,7 @@ export class PaymentsService {
       return null;
     }
 
-    const newStatus = snippePayment.status;
+    const newStatus = this.normalizePaymentStatus(snippePayment?.status);
     
     // Update payment intent status
     await client
@@ -1899,11 +1910,22 @@ export class PaymentsService {
       const body = typeof rawBody === 'string' ? JSON.parse(rawBody) : JSON.parse(rawBody.toString('utf8'));
       
       // Extract event type and data from Snippe webhook format
-      const eventType = body.type || headers['x-webhook-event'] || headers['X-Webhook-Event'];
+      const eventType =
+        body.type ||
+        body.event ||
+        body.name ||
+        headers['x-webhook-event'] ||
+        headers['X-Webhook-Event'];
       const webhookData = body.data || body;
-      
-      const reference = webhookData.reference;
-      const status = webhookData.status || (eventType === 'payment.completed' ? 'completed' : eventType === 'payment.failed' ? 'failed' : 'unknown');
+      const reference = this.extractPaymentReference(body, webhookData);
+      const status = this.normalizePaymentStatus(
+        webhookData.status ||
+          (eventType === 'payment.completed'
+            ? 'completed'
+            : eventType === 'payment.failed'
+              ? 'failed'
+              : 'unknown'),
+      );
 
       this.logger.log('📦 Webhook payload:', {
         eventType,
@@ -2253,6 +2275,33 @@ export class PaymentsService {
     } else {
       this.logger.log(`ℹ️  Payment kind is not coin_topup, skipping coin processing:`, metadata.kind);
     }
+  }
+
+  private normalizePaymentStatus(raw: any): string {
+    const s = String(raw || '').toLowerCase().trim();
+    if (['completed', 'success', 'succeeded', 'paid', 'delivered', 'done', 'settled'].includes(s)) {
+      return 'completed';
+    }
+    if (['failed', 'reversed', 'rejected', 'expired', 'voided', 'cancelled', 'canceled'].includes(s)) {
+      return s === 'canceled' ? 'cancelled' : s;
+    }
+    if (['processing', 'pending', 'initiated', 'created', 'queued'].includes(s)) {
+      return 'pending';
+    }
+    return s || 'unknown';
+  }
+
+  private extractPaymentReference(body: any, webhookData: any): string | undefined {
+    return (
+      webhookData?.reference ||
+      webhookData?.payment_reference ||
+      webhookData?.reference_id ||
+      body?.reference ||
+      body?.payment_reference ||
+      body?.reference_id ||
+      webhookData?.metadata?.reference ||
+      body?.metadata?.reference
+    );
   }
 
   private async creditShopWalletForOrder(input: {
