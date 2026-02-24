@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards, Logger } from '@nestjs/common';
+import { SubmitKycDto } from './dto/submit-kyc.dto';
 import { PaymentsService } from './payments.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -105,6 +106,35 @@ export class PaymentsController {
     @Body() dto: CreateVerificationSubscriptionDto,
   ) {
     return this.paymentsService.subscribeVerification(userId, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('verification/kyc')
+  async submitKyc(@CurrentUser() userId: string, @Body() dto: SubmitKycDto) {
+    return this.paymentsService.submitKyc(userId, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('verification/kyc/status')
+  async getKycStatus(@CurrentUser() userId: string) {
+    return this.paymentsService.getKycStatus(userId);
+  }
+
+  @Post('verification/kyc/:id/approve')
+  async approveKyc(
+    @Param('id') id: string,
+    @Headers('x-admin-secret') adminSecret: string,
+  ) {
+    return this.paymentsService.approveKycSubmission(id, adminSecret || '');
+  }
+
+  @Post('verification/kyc/:id/reject')
+  async rejectKyc(
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+    @Headers('x-admin-secret') adminSecret: string,
+  ) {
+    return this.paymentsService.rejectKycSubmission(id, body?.reason || '', adminSecret || '');
   }
 
   @UseGuards(AuthGuard)

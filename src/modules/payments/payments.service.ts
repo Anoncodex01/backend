@@ -1,8 +1,14 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
+import { timingSafeEqual } from 'crypto';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -11,6 +17,7 @@ import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
 import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
 import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
 import { CreateVerificationSubscriptionDto } from './dto/create-verification-subscription.dto';
+import { SubmitKycDto } from './dto/submit-kyc.dto';
 
 type SnippeResponse = {
   status: string;
@@ -260,13 +267,23 @@ export class PaymentsService {
       .order('ends_at', { ascending: false })
       .maybeSingle();
 
-    const isVerified = !!activeSub;
+    let kycStatus: 'not_submitted' | 'pending' | 'approved' | 'rejected' = 'not_submitted';
+    if (activeSub) {
+      const { data: latestKyc } = await client
+        .from('user_kyc_submissions')
+        .select('status')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (latestKyc?.status === 'approved') kycStatus = 'approved';
+      else if (latestKyc?.status === 'rejected') kycStatus = 'rejected';
+      else if (latestKyc?.status === 'pending') kycStatus = 'pending';
+    }
+    const kycRequired = !!activeSub && kycStatus !== 'approved';
+    const isVerified = !!activeSub && kycStatus === 'approved';
     try {
-      if (isVerified) {
-        await client.from('users').update({ is_verified: true }).eq('id', userId);
-      } else {
-        await client.from('users').update({ is_verified: false }).eq('id', userId);
-      }
+      await client.from('users').update({ is_verified: isVerified }).eq('id', userId);
     } catch {
       // Don't fail status endpoint if profile sync fails
     }
@@ -284,8 +301,158 @@ export class PaymentsService {
         is_verified: isVerified,
         subscription: activeSub || null,
         remaining_days: remainingDays,
+        kyc_status: kycStatus,
+        kyc_required: kycRequired,
       },
     };
+  }
+
+  async submitKyc(userId: string, dto: SubmitKycDto) {
+    const client = this.supabase.getClient();
+    const { data: activeSub } = await client
+      .from('user_verification_subscriptions')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .gt('ends_at', new Date().toISOString())
+      .order('ends_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!activeSub) {
+      throw new BadRequestException('No active verification subscription. Please subscribe first.');
+    }
+    const { data: existing } = await client
+      .from('user_kyc_submissions')
+      .select('id, status')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existing?.status === 'pending') {
+      throw new BadRequestException('KYC already submitted and awaiting review (up to 1 business day).');
+    }
+    if (existing?.status === 'approved') {
+      throw new BadRequestException('KYC already approved.');
+    }
+    const idBack = dto.idDocumentType === 'passport' ? null : dto.idBackUrl;
+    if (dto.idDocumentType !== 'passport' && !idBack) {
+      throw new BadRequestException('ID back photo is required for ID Card and Driving Licence.');
+    }
+    this.assertKycUrlBelongsToUser(dto.idFrontUrl, userId, 'idFrontUrl');
+    this.assertKycUrlBelongsToUser(dto.selfieUrl, userId, 'selfieUrl');
+    if (idBack) {
+      this.assertKycUrlBelongsToUser(idBack, userId, 'idBackUrl');
+    }
+    await client.from('user_kyc_submissions').insert({
+      user_id: userId,
+      subscription_id: activeSub.id,
+      id_document_type: dto.idDocumentType,
+      id_front_url: dto.idFrontUrl,
+      id_back_url: idBack,
+      selfie_url: dto.selfieUrl,
+      status: 'pending',
+    });
+    return {
+      success: true,
+      data: {
+        message: 'KYC submitted. We will review within 1 business day and email you when approved.',
+      },
+    };
+  }
+
+  async getKycStatus(userId: string) {
+    const client = this.supabase.getClient();
+    const { data: latest } = await client
+      .from('user_kyc_submissions')
+      .select('id, status, rejection_reason, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return {
+      success: true,
+      data: latest ? { status: latest.status, rejection_reason: latest.rejection_reason, submitted_at: latest.created_at } : null,
+    };
+  }
+
+  async approveKycSubmission(kycId: string, adminSecret: string) {
+    this.assertAdminSecret(adminSecret);
+    const client = this.supabase.getClient();
+    const { data: kyc } = await client
+      .from('user_kyc_submissions')
+      .select('id, user_id, status')
+      .eq('id', kycId)
+      .maybeSingle();
+    if (!kyc) throw new BadRequestException('KYC submission not found');
+    if (kyc.status !== 'pending') throw new BadRequestException(`KYC already ${kyc.status}`);
+    await client
+      .from('user_kyc_submissions')
+      .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+      .eq('id', kycId);
+    await this.syncUserVerificationFlag(kyc.user_id);
+    await this.sendVerificationApprovalEmail(kyc.user_id);
+    return { success: true, data: { message: 'KYC approved. User verified. Email sent.' } };
+  }
+
+  async rejectKycSubmission(kycId: string, reason: string, adminSecret: string) {
+    this.assertAdminSecret(adminSecret);
+    const client = this.supabase.getClient();
+    const { data: kyc } = await client
+      .from('user_kyc_submissions')
+      .select('id, status, user_id')
+      .eq('id', kycId)
+      .maybeSingle();
+    if (!kyc) throw new BadRequestException('KYC submission not found');
+    if (kyc.status !== 'pending') throw new BadRequestException(`KYC already ${kyc.status}`);
+    await client
+      .from('user_kyc_submissions')
+      .update({ status: 'rejected', rejection_reason: reason || 'Rejected', reviewed_at: new Date().toISOString() })
+      .eq('id', kycId);
+    if (kyc.user_id) {
+      await this.syncUserVerificationFlag(kyc.user_id);
+    }
+    return { success: true, data: { message: 'KYC rejected.' } };
+  }
+
+  private async sendVerificationApprovalEmail(userId: string) {
+    if (!this.smtpHost || !this.smtpUser || !this.smtpPass) {
+      this.logger.debug('SMTP not configured, skipping verification approval email.');
+      return;
+    }
+    const client = this.supabase.getClient();
+    const { data: user } = await client
+      .from('users')
+      .select('email, full_name, username')
+      .eq('id', userId)
+      .maybeSingle();
+    if (!user?.email) {
+      this.logger.warn(`User email not found for verification approval: ${userId}`);
+      return;
+    }
+    const name = user.full_name || user.username || 'Creator';
+    const transporter = nodemailer.createTransport({
+      host: this.smtpHost,
+      port: this.smtpPort,
+      secure: this.smtpPort === 465,
+      auth: { user: this.smtpUser, pass: this.smtpPass },
+    });
+    const subject = 'Verified Badge activated – WhapVibez';
+    const text = [
+      `Hi ${name},`,
+      '',
+      'Congratulations! Your identity verification has been approved.',
+      'Your Verified Badge is now active on your profile.',
+      '',
+      'Thanks for being part of WhapVibez!',
+      '',
+      '— WhapVibez',
+    ].join('\n');
+    try {
+      await transporter.sendMail({ from: this.smtpFrom, to: user.email, subject, text });
+      this.logger.log(`📧 Verification approval email sent to ${user.email}`);
+    } catch (e: any) {
+      this.logger.error(`❌ Failed to send verification approval email: ${e.message}`);
+    }
   }
 
   async subscribeVerification(userId: string, dto: CreateVerificationSubscriptionDto) {
@@ -610,8 +777,66 @@ export class PaymentsService {
           extended_from_subscription_id: currentActive?.id || null,
         },
       });
+    await this.syncUserVerificationFlag(input.userId);
+  }
 
-    await client.from('users').update({ is_verified: true }).eq('id', input.userId);
+  private assertAdminSecret(adminSecret: string) {
+    const secret = (this.config.get<string>('ADMIN_SECRET') || '').trim();
+    if (!secret || secret.length < 16) {
+      throw new BadRequestException('Admin review endpoint is not configured');
+    }
+    const provided = (adminSecret || '').trim();
+    if (!provided) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+    const a = Buffer.from(provided);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('Unauthorized');
+    }
+  }
+
+  private assertKycUrlBelongsToUser(url: string, userId: string, field: string) {
+    if (!url || !userId) {
+      throw new BadRequestException(`${field} is required`);
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException(`${field} is invalid`);
+    }
+    const marker = `/storage/v1/object/public/verification-kyc/${userId}/`;
+    if (!parsed.pathname.includes(marker)) {
+      throw new BadRequestException(`${field} does not belong to the current user`);
+    }
+  }
+
+  private async syncUserVerificationFlag(userId: string) {
+    const client = this.supabase.getClient();
+    const nowIso = new Date().toISOString();
+    const [{ data: activeSub }, { data: latestKyc }] = await Promise.all([
+      client
+        .from('user_verification_subscriptions')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .gt('ends_at', nowIso)
+        .limit(1)
+        .maybeSingle(),
+      client
+        .from('user_kyc_submissions')
+        .select('status')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    const kycApproved = latestKyc?.status === 'approved';
+    await client
+      .from('users')
+      .update({ is_verified: !!activeSub && kycApproved })
+      .eq('id', userId);
   }
 
   async createCardPayment(userId: string, dto: CreateCardPaymentDto) {
@@ -1006,7 +1231,7 @@ export class PaymentsService {
     }
   }
 
-  @Cron('0 */30 * * * *') // every 30 minutes
+  @Cron('0 0 * * * *') // every 1 hour
   async syncVerificationSubscriptions() {
     const client = this.supabase.getClient();
     const nowIso = new Date().toISOString();
@@ -1018,26 +1243,33 @@ export class PaymentsService {
         .lte('ends_at', nowIso)
         .select('user_id');
 
-      if (!expiredRows || expiredRows.length === 0) {
-        return;
-      }
-
-      const userIds = Array.from(new Set(expiredRows.map((r: any) => r.user_id).filter(Boolean)));
-      for (const userId of userIds) {
-        const { data: stillActive } = await client
+      const [{ data: activeSubs }, { data: verifiedUsers }] = await Promise.all([
+        client
           .from('user_verification_subscriptions')
-          .select('id')
-          .eq('user_id', userId)
+          .select('user_id')
           .eq('status', 'active')
-          .gt('ends_at', nowIso)
-          .limit(1);
+          .gt('ends_at', nowIso),
+        client
+          .from('users')
+          .select('id')
+          .eq('is_verified', true),
+      ]);
 
-        if (!stillActive || stillActive.length === 0) {
-          await client.from('users').update({ is_verified: false }).eq('id', userId);
-        }
+      const userIds = Array.from(
+        new Set([
+          ...((expiredRows || []).map((r: any) => r?.user_id).filter(Boolean)),
+          ...((activeSubs || []).map((r: any) => r?.user_id).filter(Boolean)),
+          ...((verifiedUsers || []).map((r: any) => r?.id).filter(Boolean)),
+        ]),
+      );
+
+      for (const userId of userIds) {
+        await this.syncUserVerificationFlag(userId);
       }
 
-      this.logger.log(`✅ Synced verification subscriptions. Expired rows: ${expiredRows.length}`);
+      this.logger.log(
+        `✅ Synced verification subscriptions. Expired rows: ${expiredRows?.length || 0}, users checked: ${userIds.length}`,
+      );
     } catch (e: any) {
       this.logger.warn(`Verification subscription sync failed: ${e?.message || e}`);
     }
