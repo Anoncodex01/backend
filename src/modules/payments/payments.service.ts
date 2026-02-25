@@ -310,7 +310,7 @@ export class PaymentsService {
 
   async submitKyc(userId: string, dto: SubmitKycDto) {
     const client = this.supabase.getClient();
-    const { data: activeSub } = await client
+    const { data: activeSub, error: activeSubError } = await client
       .from('user_verification_subscriptions')
       .select('id')
       .eq('user_id', userId)
@@ -319,16 +319,24 @@ export class PaymentsService {
       .order('ends_at', { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (activeSubError) {
+      this.logger.error(`submitKyc active subscription lookup failed: ${activeSubError.message}`);
+      throw new BadRequestException('Failed to validate verification subscription.');
+    }
     if (!activeSub) {
       throw new BadRequestException('No active verification subscription. Please subscribe first.');
     }
-    const { data: existing } = await client
+    const { data: existing, error: existingError } = await client
       .from('user_kyc_submissions')
       .select('id, status')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (existingError) {
+      this.logger.error(`submitKyc existing submission lookup failed: ${existingError.message}`);
+      throw new BadRequestException('Failed to validate previous KYC submissions.');
+    }
     if (existing?.status === 'pending') {
       throw new BadRequestException('KYC already submitted and awaiting review (up to 1 business day).');
     }
@@ -344,7 +352,7 @@ export class PaymentsService {
     if (idBack) {
       this.assertKycUrlBelongsToUser(idBack, userId, 'idBackUrl');
     }
-    await client.from('user_kyc_submissions').insert({
+    const { error: insertError } = await client.from('user_kyc_submissions').insert({
       user_id: userId,
       subscription_id: activeSub.id,
       id_document_type: dto.idDocumentType,
@@ -353,6 +361,10 @@ export class PaymentsService {
       selfie_url: dto.selfieUrl,
       status: 'pending',
     });
+    if (insertError) {
+      this.logger.error(`submitKyc insert failed for user ${userId}: ${insertError.message}`);
+      throw new BadRequestException('Failed to submit KYC. Please try again.');
+    }
     return {
       success: true,
       data: {
@@ -830,8 +842,13 @@ export class PaymentsService {
     } catch {
       throw new BadRequestException(`${field} is invalid`);
     }
-    const marker = `/storage/v1/object/public/verification-kyc/${userId}/`;
-    if (!parsed.pathname.includes(marker)) {
+    const markers = [
+      `/storage/v1/object/public/verification-kyc/${userId}/`,
+      `/storage/v1/object/sign/verification-kyc/${userId}/`,
+      `/storage/v1/object/authenticated/verification-kyc/${userId}/`,
+    ];
+    const matches = markers.some((marker) => parsed.pathname.includes(marker));
+    if (!matches) {
       throw new BadRequestException(`${field} does not belong to the current user`);
     }
   }
