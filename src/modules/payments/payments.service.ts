@@ -265,6 +265,7 @@ export class PaymentsService {
       .eq('status', 'active')
       .gt('ends_at', nowIso)
       .order('ends_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     let kycStatus: 'not_submitted' | 'pending' | 'approved' | 'rejected' = 'not_submitted';
@@ -767,10 +768,22 @@ export class PaymentsService {
       .eq('status', 'active')
       .gt('ends_at', nowIso)
       .order('ends_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     const startAt = currentActive?.ends_at ? new Date(currentActive.ends_at) : now;
     const endAt = this.addMonths(startAt, durationMonths);
+
+    // Safety cleanup: keep only the latest active subscription and expire older duplicate active rows.
+    if (currentActive?.id) {
+      await client
+        .from('user_verification_subscriptions')
+        .update({ status: 'expired', updated_at: nowIso })
+        .eq('user_id', input.userId)
+        .eq('status', 'active')
+        .neq('id', currentActive.id)
+        .gt('ends_at', nowIso);
+    }
 
     await client
       .from('user_verification_subscriptions')
