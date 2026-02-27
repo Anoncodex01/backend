@@ -2226,6 +2226,16 @@ export class PaymentsService {
       return;
     }
 
+    if (metadata.kind === 'shop_advertisement') {
+      await this.activateShopAdvertisementFromPayment({
+        userId,
+        reference,
+        metadata,
+      });
+      this.logger.log(`✅ Shop advertisement activated from payment ${reference}`);
+      return;
+    }
+
     if (metadata.kind === 'coin_topup') {
       // Check if transaction already exists (prevent duplicate processing)
       const { data: existing } = await client
@@ -2319,6 +2329,92 @@ export class PaymentsService {
       return 'pending';
     }
     return s || 'unknown';
+  }
+
+  private async activateShopAdvertisementFromPayment(input: {
+    userId: string;
+    reference: string;
+    metadata: Record<string, any>;
+  }) {
+    const client = this.supabase.getClient();
+    const { userId, reference, metadata } = input;
+
+    const shopId = (metadata.shop_id || '').toString();
+    const productId = (metadata.product_id || '').toString();
+    if (!shopId || !productId) {
+      this.logger.warn(
+        `shop_advertisement activation skipped: missing shop_id/product_id for ${reference}`,
+      );
+      return;
+    }
+
+    try {
+      const { data: existing } = await client
+        .from('shop_ads')
+        .select('id')
+        .eq('payment_reference', reference)
+        .maybeSingle();
+      if (existing?.id) {
+        return;
+      }
+    } catch (e: any) {
+      const msg = (e?.message || '').toString().toLowerCase();
+      if (!msg.includes('payment_reference')) {
+        this.logger.warn(`shop_advertisement existing-check failed: ${e?.message || e}`);
+      }
+    }
+
+    const durationDays = Math.max(1, Number(metadata.duration_days || 1));
+    const placementsRaw = metadata.placements;
+    const placements = Array.isArray(placementsRaw)
+      ? placementsRaw.map((p: any) => String(p)).filter(Boolean)
+      : ['shop'];
+    const startAt = new Date();
+    const endAt = new Date(startAt.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    const rowWithRef = {
+      shop_id: shopId,
+      product_id: productId,
+      created_by: userId,
+      status: 'active',
+      placements: placements.length ? placements : ['shop'],
+      headline: metadata.headline ? String(metadata.headline) : String(metadata.goal_label || 'Get sales'),
+      cta_text: 'Shop Now',
+      daily_budget_tzs: Number(metadata.daily_budget_tzs || 0),
+      total_budget_tzs: Number(metadata.total_budget_tzs || 0),
+      bid_per_click_tzs: Number(metadata.bid_per_click_tzs || 0),
+      start_at: startAt.toISOString(),
+      end_at: endAt.toISOString(),
+      payment_reference: reference,
+    };
+
+    try {
+      const { error } = await client.from('shop_ads').insert(rowWithRef);
+      if (error) {
+        const msg = (error.message || '').toLowerCase();
+        if (msg.includes('payment_reference')) {
+          const { payment_reference, ...rowWithoutRef } = rowWithRef;
+          const { error: fallbackError } = await client.from('shop_ads').insert(rowWithoutRef);
+          if (fallbackError) {
+            this.logger.error(
+              `Failed to activate shop_advertisement ${reference} (fallback): ${fallbackError.message}`,
+            );
+          } else {
+            this.logger.warn(
+              `Activated shop_advertisement ${reference} without payment_reference column (migration missing)`,
+            );
+          }
+        } else {
+          this.logger.error(
+            `Failed to activate shop_advertisement ${reference}: ${error.message}`,
+          );
+        }
+      }
+    } catch (e: any) {
+      this.logger.error(
+        `Failed to activate shop_advertisement ${reference}: ${e?.message || e}`,
+      );
+    }
   }
 
   private extractPaymentReference(body: any, webhookData: any): string | undefined {
@@ -2956,6 +3052,88 @@ export class PaymentsService {
       pendingAmount,
       transactions: txList,
     };
+  }
+
+  /**
+   * Auto-approve stale pending KYC submissions after configured SLA.
+   * Default: 24 hours (1 business day).
+   *
+   * Controls:
+   * - KYC_AUTO_APPROVE_ENABLED=true|false (default true)
+   * - KYC_AUTO_APPROVE_HOURS=24 (default 24)
+   */
+  @Cron('0 */15 * * * *') // every 15 minutes
+  async autoApproveStaleKycSubmissions() {
+    const enabled = (
+      this.config.get<string>('KYC_AUTO_APPROVE_ENABLED', 'true') || 'true'
+    )
+      .toLowerCase()
+      .trim();
+    if (enabled === 'false' || enabled === '0' || enabled === 'no') {
+      return;
+    }
+
+    const hoursCfg = Number(this.config.get<string>('KYC_AUTO_APPROVE_HOURS', '24'));
+    const hours = Number.isFinite(hoursCfg) && hoursCfg > 0 ? hoursCfg : 24;
+    const cutoffIso = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const nowIso = new Date().toISOString();
+    const client = this.supabase.getClient();
+
+    try {
+      const { data: stalePending, error } = await client
+        .from('user_kyc_submissions')
+        .select('id, user_id, created_at')
+        .eq('status', 'pending')
+        .lte('created_at', cutoffIso)
+        .limit(100);
+
+      if (error) {
+        this.logger.warn(`Auto-approve KYC fetch failed: ${error.message}`);
+        return;
+      }
+
+      if (!stalePending || stalePending.length === 0) {
+        return;
+      }
+
+      let approvedCount = 0;
+      for (const row of stalePending) {
+        const { data: updated, error: updateError } = await client
+          .from('user_kyc_submissions')
+          .update({ status: 'approved', reviewed_at: nowIso })
+          .eq('id', row.id)
+          .eq('status', 'pending')
+          .select('id, user_id')
+          .maybeSingle();
+
+        if (updateError) {
+          this.logger.warn(
+            `Auto-approve KYC update failed (${row.id}): ${updateError.message}`,
+          );
+          continue;
+        }
+        if (!updated?.id || !updated.user_id) {
+          continue;
+        }
+
+        approvedCount++;
+        await this.syncUserVerificationFlag(updated.user_id);
+        await this.sendVerificationApprovalEmail(updated.user_id);
+      }
+
+      if (approvedCount > 0) {
+        this.logger.log(
+          `✅ Auto-approved ${approvedCount} stale KYC submission(s) older than ${hours}h`,
+        );
+        await this.logAdminEvent({
+          category: 'verification',
+          message: 'autoApproveStaleKycSubmissions',
+          metadata: { approvedCount, hours, cutoffIso },
+        });
+      }
+    } catch (e: any) {
+      this.logger.warn(`Auto-approve stale KYC failed: ${e?.message || e}`);
+    }
   }
 
   private async postToSnippe(payload: Record<string, any>, idempotencyKey: string): Promise<SnippeResponse> {
