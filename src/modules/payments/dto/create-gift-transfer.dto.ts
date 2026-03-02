@@ -4,9 +4,14 @@ export class CreateGiftTransferDto {
   @IsString()
   receiverId: string;
 
+  @IsOptional()
+  @IsString()
+  giftId?: string;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
-  coinCost: number;
+  coinCost?: number;
 
   @IsString()
   giftName: string;

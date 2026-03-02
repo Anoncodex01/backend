@@ -9,6 +9,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { v4 as uuidv4 } from 'uuid';
 import * as nodemailer from 'nodemailer';
 import { timingSafeEqual } from 'crypto';
+import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -41,6 +42,14 @@ type VerificationPlan = {
   sort_order: number;
 };
 
+type GiftCatalogItem = {
+  id: string;
+  name: string;
+  icon: string;
+  coinCost: number;
+  accentHex: string;
+};
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -49,10 +58,42 @@ export class PaymentsService {
     { code: '6months', name: 'Verified Badge 6 Months', price_tzs: 22500, duration_months: 6, sort_order: 2 },
     { code: 'yearly', name: 'Verified Badge Yearly', price_tzs: 40500, duration_months: 12, sort_order: 3 },
   ];
+  private readonly giftCatalog: GiftCatalogItem[] = [
+    { id: 'rose', name: 'Rose', icon: '🌹', coinCost: 10, accentHex: '#FF5F6D' },
+    { id: 'star', name: 'Star', icon: '⭐', coinCost: 20, accentHex: '#FFC107' },
+    { id: 'spark', name: 'Spark', icon: '✨', coinCost: 25, accentHex: '#7C4DFF' },
+    { id: 'fire', name: 'Fire', icon: '🔥', coinCost: 40, accentHex: '#FF6D00' },
+    { id: 'heart', name: 'Heart', icon: '💖', coinCost: 50, accentHex: '#FF4081' },
+    { id: 'confetti', name: 'Confetti', icon: '🎉', coinCost: 60, accentHex: '#AB47BC' },
+    { id: 'butterfly', name: 'Butterfly', icon: '🦋', coinCost: 80, accentHex: '#26C6DA' },
+    { id: 'music_note', name: 'Music Note', icon: '🎵', coinCost: 90, accentHex: '#5C6BC0' },
+    { id: 'rainbow', name: 'Rainbow', icon: '🌈', coinCost: 110, accentHex: '#42A5F5' },
+    { id: 'lightning', name: 'Lightning', icon: '⚡', coinCost: 120, accentHex: '#FFEB3B' },
+    { id: 'cupcake', name: 'Cupcake', icon: '🧁', coinCost: 140, accentHex: '#F06292' },
+    { id: 'crown', name: 'Crown', icon: '👑', coinCost: 150, accentHex: '#FFD54F' },
+    { id: 'trophy', name: 'Trophy', icon: '🏆', coinCost: 180, accentHex: '#FFD54F' },
+    { id: 'sun', name: 'Sun', icon: '☀️', coinCost: 200, accentHex: '#FFB300' },
+    { id: 'snowflake', name: 'Snowflake', icon: '❄️', coinCost: 220, accentHex: '#4FC3F7' },
+    { id: 'flower', name: 'Flower', icon: '🌸', coinCost: 240, accentHex: '#F48FB1' },
+    { id: 'party_popper', name: 'Party Popper', icon: '🎊', coinCost: 260, accentHex: '#BA68C8' },
+    { id: 'shamrock', name: 'Shamrock', icon: '🍀', coinCost: 280, accentHex: '#66BB6A' },
+    { id: 'diamond', name: 'Diamond', icon: '💎', coinCost: 300, accentHex: '#40C4FF' },
+    { id: 'planet', name: 'Planet', icon: '🪐', coinCost: 320, accentHex: '#7986CB' },
+    { id: 'guitar', name: 'Guitar', icon: '🎸', coinCost: 360, accentHex: '#8D6E63' },
+    { id: 'camera', name: 'Camera', icon: '📸', coinCost: 400, accentHex: '#26A69A' },
+    { id: 'boxing_gloves', name: 'Boxing Gloves', icon: '🥊', coinCost: 450, accentHex: '#EF5350' },
+    { id: 'magic_wand', name: 'Magic Wand', icon: '🪄', coinCost: 500, accentHex: '#7E57C2' },
+    { id: 'rocket', name: 'Rocket', icon: '🚀', coinCost: 600, accentHex: '#00E676' },
+    { id: 'golden_star', name: 'Golden Star', icon: '🌟', coinCost: 700, accentHex: '#FFD54F' },
+    { id: 'castle', name: 'Castle', icon: '🏰', coinCost: 900, accentHex: '#B39DDB' },
+    { id: 'supercar', name: 'Supercar', icon: '🏎️', coinCost: 1200, accentHex: '#E53935' },
+    { id: 'yacht', name: 'Yacht', icon: '🛥️', coinCost: 1800, accentHex: '#26C6DA' },
+  ];
 
   constructor(
     private config: ConfigService,
     private supabase: SupabaseService,
+    private redis: RedisService,
     private firebase: FirebaseService,
     private notifications: NotificationsService,
   ) {}
@@ -75,6 +116,31 @@ export class PaymentsService {
 
   private get coinRate() {
     return Number(this.config.get<string>('COIN_RATE', '1'));
+  }
+
+  private normalizeGiftKey(value?: string | null) {
+    return (value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  private resolveGiftCatalogItem(dto: CreateGiftTransferDto) {
+    const candidateKeys = [
+      this.normalizeGiftKey(dto.giftId),
+      this.normalizeGiftKey(dto.giftName),
+    ].filter(Boolean);
+
+    return this.giftCatalog.find((gift) => candidateKeys.includes(gift.id));
+  }
+
+  getGiftCatalog() {
+    return {
+      items: this.giftCatalog.map((gift) => ({
+        ...gift,
+        isPremium: gift.coinCost >= 600,
+      })),
+    };
   }
 
   private async logAdminEvent(params: {
@@ -285,6 +351,7 @@ export class PaymentsService {
     const isVerified = !!activeSub && kycStatus === 'approved';
     try {
       await client.from('users').update({ is_verified: isVerified }).eq('id', userId);
+      await this.invalidateUserVerificationCaches(userId);
     } catch {
       // Don't fail status endpoint if profile sync fails
     }
@@ -878,6 +945,18 @@ export class PaymentsService {
       .from('users')
       .update({ is_verified: !!activeSub && kycApproved })
       .eq('id', userId);
+    await this.invalidateUserVerificationCaches(userId);
+  }
+
+  private async invalidateUserVerificationCaches(userId: string) {
+    try {
+      await this.redis.del(`user:${userId}`);
+      await this.redis.del(`user:profile:${userId}`);
+      await this.redis.del(`user:stats:${userId}`);
+      await this.redis.deletePattern(`user:posts:${userId}:*`);
+    } catch (error) {
+      this.logger.warn(`Failed to invalidate verification caches for ${userId}: ${error}`);
+    }
   }
 
   async createCardPayment(userId: string, dto: CreateCardPaymentDto) {
@@ -1857,11 +1936,15 @@ export class PaymentsService {
     if (senderId === dto.receiverId) {
       throw new BadRequestException('Cannot send gift to yourself');
     }
+    const resolvedGift = this.resolveGiftCatalogItem(dto);
+    if (!resolvedGift) {
+      throw new BadRequestException('Unsupported gift');
+    }
     const client = this.supabase.getClient();
     try {
       const { data: senderBalance, error } = await client.rpc('decrement_coin_balance', {
         p_user_id: senderId,
-        p_amount: dto.coinCost,
+        p_amount: resolvedGift.coinCost,
       });
       if (error) {
         throw error;
@@ -1869,12 +1952,13 @@ export class PaymentsService {
 
       const { data: receiverBalance } = await client.rpc('increment_coin_balance', {
         p_user_id: dto.receiverId,
-        p_amount: dto.coinCost,
+        p_amount: resolvedGift.coinCost,
       });
 
       const metadata = {
-        giftName: dto.giftName,
-        giftIcon: dto.giftIcon,
+        giftId: resolvedGift.id,
+        giftName: resolvedGift.name,
+        giftIcon: resolvedGift.icon,
         liveId: dto.liveId,
         receiverId: dto.receiverId,
         senderId,
@@ -1883,14 +1967,14 @@ export class PaymentsService {
       await client.from('coin_transactions').insert([
         {
           user_id: senderId,
-          amount: -Math.abs(dto.coinCost),
+          amount: -Math.abs(resolvedGift.coinCost),
           type: 'gift',
           status: 'completed',
           metadata: { ...metadata, direction: 'sent' },
         },
         {
           user_id: dto.receiverId,
-          amount: Math.abs(dto.coinCost),
+          amount: Math.abs(resolvedGift.coinCost),
           type: 'gift',
           status: 'completed',
           metadata: { ...metadata, direction: 'received' },
@@ -1899,8 +1983,8 @@ export class PaymentsService {
 
       await this.logAdminEvent({
         category: 'gift',
-        message: `Gift sent ${dto.giftName || ''}`.trim(),
-        metadata: { senderId, receiverId: dto.receiverId, coinCost: dto.coinCost, liveId: dto.liveId },
+        message: `Gift sent ${resolvedGift.name}`.trim(),
+        metadata: { senderId, receiverId: dto.receiverId, coinCost: resolvedGift.coinCost, liveId: dto.liveId, giftId: resolvedGift.id },
       });
 
       if (typeof senderBalance === 'number') {
@@ -1913,13 +1997,14 @@ export class PaymentsService {
       return {
         senderBalance,
         receiverBalance,
+        gift: resolvedGift,
       };
     } catch (e: any) {
       await this.logAdminEvent({
         level: 'error',
         category: 'gift',
         message: 'Gift transfer failed',
-        metadata: { senderId, receiverId: dto.receiverId, coinCost: dto.coinCost, error: e?.message },
+        metadata: { senderId, receiverId: dto.receiverId, coinCost: resolvedGift.coinCost, giftId: resolvedGift.id, error: e?.message },
       });
       if ((e?.message || '').includes('insufficient_balance')) {
         throw new BadRequestException('Not enough coins');

@@ -40,6 +40,11 @@ export class PaymentsController {
     return this.paymentsService.getShopWalletSummary(userId);
   }
 
+  @Get('gifts/catalog')
+  async getGiftCatalog() {
+    return this.paymentsService.getGiftCatalog();
+  }
+
   @UseGuards(AuthGuard)
   @Get(':reference/status')
   async getPaymentStatusFromDb(@CurrentUser() userId: string, @Param('reference') reference: string) {
