@@ -1471,7 +1471,7 @@ export class PaymentsService {
     const platformFeeRate = 0.25;
     const withdrawFeeRate = 0.03;
     const totalFeeRate = platformFeeRate + withdrawFeeRate; // 28%
-    const minAmountTzs = 5155; // Business minimum displayed in app
+    const minAmountTzs = 10000; // Business minimum displayed in app
     try {
       const amountTzs = Number(dto.amount || 0);
       if (amountTzs <= 0) {
@@ -1659,7 +1659,7 @@ export class PaymentsService {
     narration?: string;
   }) {
     const minAmount = 10000;
-    const feeRate = 0.10; // 10% total withdrawal fee
+    const feeRate = 0.07; // 7% total withdrawal fee
     const withdrawFeeRate = 0;
     if (dto.amount < minAmount) {
       throw new BadRequestException(`Minimum withdrawal is ${minAmount}`);

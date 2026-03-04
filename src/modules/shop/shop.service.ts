@@ -35,7 +35,7 @@ export class ShopService {
     category?: string;
     sellerId?: string;
   }) {
-    const cacheKey = `products:${options.category || 'all'}:${options.offset || 0}:${options.limit || 20}`;
+    const cacheKey = `products:${options.category || 'all'}:${options.sellerId || 'all'}:${options.offset || 0}:${options.limit || 20}`;
 
     return this.redisService.getOrSet(
       cacheKey,
@@ -58,11 +58,14 @@ export class ShopService {
           .from('products')
           .select(`
             *,
-            seller:seller_id (
+            shops(*),
+            users:user_id (
               id,
               username,
               full_name,
-              profile_image_url
+              profile_image_url,
+              is_verified,
+              followers_count
             )
           `)
           .eq('id', productId)
@@ -109,4 +112,3 @@ export class ShopService {
     await this.redisService.del('product_categories');
   }
 }
-

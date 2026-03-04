@@ -525,7 +525,7 @@ export class SupabaseService implements OnModuleInit {
     }
 
     if (options.sellerId) {
-      query = query.eq('seller_id', options.sellerId);
+      query = query.eq('user_id', options.sellerId);
     }
 
     if (options.limit) {
@@ -540,7 +540,7 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
     
     if (data && data.length > 0) {
-      const sellerIds = [...new Set(data.map(p => p.seller_id).filter(Boolean))];
+      const sellerIds = [...new Set(data.map(p => p.user_id).filter(Boolean))];
       if (sellerIds.length > 0) {
         const { data: sellers } = await this.client
           .from('users')
@@ -550,7 +550,7 @@ export class SupabaseService implements OnModuleInit {
         const sellerMap = new Map((sellers || []).map(s => [s.id, s]));
         return data.map(product => ({
           ...product,
-          seller: sellerMap.get(product.seller_id) || null
+          seller: sellerMap.get(product.user_id) || null
         }));
       }
     }
