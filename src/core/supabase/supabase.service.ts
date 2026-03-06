@@ -403,7 +403,7 @@ export class SupabaseService implements OnModuleInit {
   /**
    * Get reels feed: video-only posts (slim select, cursor pagination)
    */
-  async getReelsPosts(limit = 20, offset = 0, cursor?: string) {
+  async getReelsPosts(limit = 20, offset = 0, cursor?: string, createdAfter?: string) {
     let query = this.client
       .from('posts')
       .select(SupabaseService.FEED_POST_SELECT)
@@ -414,7 +414,9 @@ export class SupabaseService implements OnModuleInit {
       .order('views_count', { ascending: false })
       .order('id', { ascending: false });
 
-    if (cursor) {
+    if (createdAfter) {
+      query = query.gt('created_at', createdAfter).limit(limit);
+    } else if (cursor) {
       query = query.lt('created_at', cursor).limit(limit);
     } else {
       query = query.range(offset, offset + limit - 1);
@@ -460,6 +462,40 @@ export class SupabaseService implements OnModuleInit {
       isLiked: !!likeResult.data,
       isSaved: !!saveResult.data,
     };
+  }
+
+  async getPostInteractionStatusBatch(postIds: string[], userId: string) {
+    if (postIds.length === 0) {
+      return new Map<string, { isLiked: boolean; isSaved: boolean }>();
+    }
+
+    const [likesResult, savesResult] = await Promise.all([
+      this.client
+        .from('post_likes')
+        .select('post_id')
+        .eq('user_id', userId)
+        .in('post_id', postIds),
+      this.client
+        .from('post_saves')
+        .select('post_id')
+        .eq('user_id', userId)
+        .in('post_id', postIds),
+    ]);
+
+    if (likesResult.error) throw likesResult.error;
+    if (savesResult.error) throw savesResult.error;
+
+    const likedIds = new Set((likesResult.data || []).map((r: any) => r.post_id));
+    const savedIds = new Set((savesResult.data || []).map((r: any) => r.post_id));
+
+    const statusMap = new Map<string, { isLiked: boolean; isSaved: boolean }>();
+    for (const postId of postIds) {
+      statusMap.set(postId, {
+        isLiked: likedIds.has(postId),
+        isSaved: savedIds.has(postId),
+      });
+    }
+    return statusMap;
   }
 
   // ===== Following =====

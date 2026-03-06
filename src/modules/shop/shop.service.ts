@@ -69,7 +69,8 @@ export class ShopService {
             )
           `)
           .eq('id', productId)
-          .single();
+          .eq('is_active', true)
+          .maybeSingle();
 
         if (error) throw error;
         return data;

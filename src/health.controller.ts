@@ -67,6 +67,12 @@ export class HealthController {
     return this.shareCommunity(code, req, res);
   }
 
+  /** Short link: /v1/s/:id — e.g. https://vt.whapvibez.com/v1/s/<product-id> */
+  @Get('s/:id')
+  shareProductShort(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    return this.shareProduct(id, req, res);
+  }
+
   @Get('share/post/:id')
   sharePost(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
     return this.renderSharePage({
@@ -131,6 +137,39 @@ export class HealthController {
         `Use this invite to open and join ${communityName} in WhapVibez.`,
       imageUrl: community?.cover_image_url || community?.image_url || null,
       deepLinkPath: `c/${community?.invite_code || code}`,
+    });
+  }
+
+  @Get('share/product/:id')
+  async shareProduct(
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const { data: product } = await this.supabaseService
+      .getClient()
+      .from('products')
+      .select('id, name, description, price, thumbnail_url, images, shops(shop_name)')
+      .eq('id', id)
+      .maybeSingle();
+
+    const productName = product?.name || 'Product';
+    const shopName = 'WhapVibez Shop';
+    const imageUrl =
+      product?.thumbnail_url ||
+      (Array.isArray(product?.images) && product!.images.length > 0
+        ? String(product!.images[0] || '')
+        : null);
+
+    return this.renderSharePage({
+      req,
+      res,
+      title: `${productName} on ${shopName}`,
+      description:
+        product?.description ||
+        `Open ${productName} in WhapVibez Shop.`,
+      imageUrl: imageUrl || null,
+      deepLinkPath: `product/${id}`,
     });
   }
 

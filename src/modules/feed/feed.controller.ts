@@ -143,6 +143,7 @@ export class FeedController {
     @Query('limit') limit: number = 20,
     @Query('offset') offset: number = 0,
     @Query('cursor') cursor?: string,
+    @Query('createdAfter') createdAfter?: string,
     @Query('fresh') fresh?: string,
     @Headers('authorization') authHeader?: string,
   ) {
@@ -158,8 +159,24 @@ export class FeedController {
     }
 
     const forceFresh = fresh === '1' || fresh?.toLowerCase() === 'true';
-    const posts = await this.feedService.getReelsFeed({ userId, limit, offset, cursor, fresh: forceFresh });
-    const nextCursor = posts.length >= limit && posts.length > 0
+    const safeLimit = Number.isFinite(Number(limit))
+      ? Math.min(Math.max(Number(limit), 1), 50)
+      : 20;
+    const safeOffset = Number.isFinite(Number(offset))
+      ? Math.max(Number(offset), 0)
+      : 0;
+    const safeCreatedAfter = createdAfter && !Number.isNaN(Date.parse(createdAfter))
+      ? new Date(createdAfter).toISOString()
+      : undefined;
+    const posts = await this.feedService.getReelsFeed({
+      userId,
+      limit: safeLimit,
+      offset: safeOffset,
+      cursor,
+      fresh: forceFresh,
+      createdAfter: safeCreatedAfter,
+    });
+    const nextCursor = posts.length >= safeLimit && posts.length > 0
       ? (posts[posts.length - 1] as any).created_at
       : undefined;
 
@@ -167,10 +184,10 @@ export class FeedController {
       success: true,
       data: posts,
       meta: {
-        limit,
-        offset,
+        limit: safeLimit,
+        offset: safeOffset,
         count: posts.length,
-        hasMore: posts.length === limit,
+        hasMore: posts.length === safeLimit,
         nextCursor,
       },
     };

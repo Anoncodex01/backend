@@ -2477,23 +2477,18 @@ export class PaymentsService {
       const { error } = await client.from('shop_ads').insert(rowWithRef);
       if (error) {
         const msg = (error.message || '').toLowerCase();
+        // If payment_reference constraint fails (duplicate reference),
+        // we assume the ad is already active and do NOT insert another row.
         if (msg.includes('payment_reference')) {
-          const { payment_reference, ...rowWithoutRef } = rowWithRef;
-          const { error: fallbackError } = await client.from('shop_ads').insert(rowWithoutRef);
-          if (fallbackError) {
-            this.logger.error(
-              `Failed to activate shop_advertisement ${reference} (fallback): ${fallbackError.message}`,
-            );
-          } else {
-            this.logger.warn(
-              `Activated shop_advertisement ${reference} without payment_reference column (migration missing)`,
-            );
-          }
-        } else {
-          this.logger.error(
-            `Failed to activate shop_advertisement ${reference}: ${error.message}`,
+          this.logger.warn(
+            `Shop advertisement for reference ${reference} already exists (payment_reference conflict); skipping duplicate insert.`,
           );
+          return;
         }
+
+        this.logger.error(
+          `Failed to activate shop_advertisement ${reference}: ${error.message}`,
+        );
       }
     } catch (e: any) {
       this.logger.error(

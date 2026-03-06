@@ -203,12 +203,14 @@ export class FeedService {
     offset?: number;
     cursor?: string;
     fresh?: boolean;
+    createdAfter?: string;
   }) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
     const cursor = options.cursor;
     const fresh = options.fresh === true;
-    const isFirstPage = !cursor && offset === 0;
+    const createdAfter = options.createdAfter;
+    const isFirstPage = !cursor && offset === 0 && !createdAfter;
     const cacheKey = `feed:reels:page1:${limit}`;
 
     let posts: any[] | null = null;
@@ -221,7 +223,7 @@ export class FeedService {
     }
 
     if (!posts) {
-      posts = await this.supabaseService.getReelsPosts(limit, offset, cursor);
+      posts = await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter);
       if (isFirstPage && !fresh) {
         try {
           await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
@@ -277,19 +279,22 @@ export class FeedService {
    */
   private async enrichPostsWithUserStatus(posts: any[], userId: string) {
     const postIds = posts.map((p) => p.id);
-    
-    // Batch fetch interaction status
-    const statusPromises = postIds.map((postId) =>
-      this.supabaseService.getPostInteractionStatus(postId, userId),
+    const statusMap = await this.supabaseService.getPostInteractionStatusBatch(
+      postIds,
+      userId,
     );
 
-    const statuses = await Promise.all(statusPromises);
-
-    return posts.map((post, index) => ({
-      ...post,
-      is_liked: statuses[index].isLiked,
-      is_saved: statuses[index].isSaved,
-    }));
+    return posts.map((post) => {
+      const status = statusMap.get(post.id) || {
+        isLiked: false,
+        isSaved: false,
+      };
+      return {
+        ...post,
+        is_liked: status.isLiked,
+        is_saved: status.isSaved,
+      };
+    });
   }
 
   /**
