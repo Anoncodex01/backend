@@ -74,13 +74,42 @@ export class HealthController {
   }
 
   @Get('share/post/:id')
-  sharePost(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+  async sharePost(@Param('id') id: string, @Req() req: Request, @Res() res: Response) {
+    const { data: post } = await this.supabaseService
+      .getClient()
+      .from('posts')
+      .select('id, caption, thumbnail_url, video_thumbnail_url, created_at, user_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    let creatorName = 'WhapVibez Creator';
+    let creatorImage: string | null = null;
+    if (post?.user_id) {
+      const { data: user } = await this.supabaseService
+        .getClient()
+        .from('users')
+        .select('full_name, username, profile_image_url')
+        .eq('id', post.user_id)
+        .maybeSingle();
+      creatorName = user?.full_name || user?.username || creatorName;
+      creatorImage = user?.profile_image_url ?? null;
+    }
+
+    const postCaption = (post?.caption || '').toString().trim();
+    const imageUrl = post?.video_thumbnail_url || post?.thumbnail_url || creatorImage;
+    const title = postCaption.isNotEmpty
+      ? `${creatorName}: ${postCaption.length > 70 ? `${postCaption.substring(0, 70)}...` : postCaption}`
+      : `${creatorName} on WhapVibez`;
+    const description = postCaption.isNotEmpty
+      ? postCaption
+      : `Watch this reel from ${creatorName} on WhapVibez.`;
+
     return this.renderSharePage({
       req,
       res,
-      title: 'Open this post in WhapVibez',
-      description: 'Tap to open this shared post in the app.',
-      imageUrl: null,
+      title,
+      description,
+      imageUrl: imageUrl ?? null,
       deepLinkPath: `post/${id}`,
     });
   }
