@@ -97,10 +97,11 @@ export class HealthController {
 
     const postCaption = (post?.caption || '').toString().trim();
     const imageUrl = post?.video_thumbnail_url || post?.thumbnail_url || creatorImage;
-    const title = postCaption.isNotEmpty
+    const hasCaption = postCaption.length > 0;
+    const title = hasCaption
       ? `${creatorName}: ${postCaption.length > 70 ? `${postCaption.substring(0, 70)}...` : postCaption}`
       : `${creatorName} on WhapVibez`;
-    const description = postCaption.isNotEmpty
+    const description = hasCaption
       ? postCaption
       : `Watch this reel from ${creatorName} on WhapVibez.`;
 
