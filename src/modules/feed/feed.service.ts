@@ -16,7 +16,8 @@ export class FeedService {
   ) {
     this.feedTtl = this.configService.get('CACHE_FEED_TTL', 30);
     this.trendingTtl = this.configService.get('CACHE_TRENDING_TTL', 120);
-    this.reelsTtl = this.configService.get('CACHE_REELS_TTL', 10);
+    // Keep first reels page hot for longer to reduce DB pressure and cold starts.
+    this.reelsTtl = this.configService.get('CACHE_REELS_TTL', 45);
   }
 
   /**
