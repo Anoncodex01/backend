@@ -144,7 +144,7 @@ export class SupabaseService implements OnModuleInit {
 
     const { data, error } = await query;
     if (error) throw error;
-    return data || [];
+    return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
 
   async getUserStats(userId: string) {
@@ -242,13 +242,14 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
 
     if (data && data.length > 0) {
+      const normalizedData = data.map((post: any) => this.normalizePostMedia(post));
       const userIds = [...new Set(data.map(p => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map(u => [u.id, u]));
-      return data.map(post => ({
+      return normalizedData.map(post => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
@@ -294,7 +295,68 @@ export class SupabaseService implements OnModuleInit {
 
   /** Slim columns for feeds (faster network + parsing, no select('*')) */
   private static readonly FEED_POST_SELECT =
-    'id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,views_count,likes_count,comments_count,is_public,post_type';
+    'id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,video_thumbnail_url,image_url,image_urls,images,views_count,likes_count,comments_count,is_public,post_type';
+
+  private normalizePostMedia(post: any) {
+    const normalized = { ...post };
+    const imageUrls: string[] = [];
+    const appendIfUrl = (value: any) => {
+      if (typeof value !== 'string') return;
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        imageUrls.push(trimmed);
+      }
+    };
+    const appendFromUnknown = (value: any) => {
+      if (value == null) return;
+      if (Array.isArray(value)) {
+        for (const item of value) appendFromUnknown(item);
+        return;
+      }
+      if (typeof value === 'object') {
+        appendIfUrl(value?.url ?? value?.src ?? value?.path);
+        return;
+      }
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return;
+        if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            appendFromUnknown(parsed);
+            return;
+          } catch {
+            // Fall through and treat as plain string URL.
+          }
+        }
+        appendIfUrl(trimmed);
+      }
+    };
+
+    appendFromUnknown(post?.image_urls);
+    appendFromUnknown(post?.images);
+    appendIfUrl(post?.image_url);
+    appendIfUrl(post?.media_url);
+
+    normalized.image_urls = Array.from(new Set(imageUrls));
+
+    const currentThumb = typeof normalized.thumbnail_url === 'string'
+      ? normalized.thumbnail_url.trim()
+      : '';
+    if (!currentThumb) {
+      if (normalized.post_type === 'video') {
+        const videoThumb = typeof normalized.video_thumbnail_url === 'string'
+          ? normalized.video_thumbnail_url.trim()
+          : '';
+        if (videoThumb) normalized.thumbnail_url = videoThumb;
+      } else if (normalized.image_urls.length > 0) {
+        normalized.thumbnail_url = normalized.image_urls[0];
+      }
+    }
+
+    return normalized;
+  }
 
   async getPosts(options: {
     limit?: number;
@@ -330,18 +392,19 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
 
     if (data && data.length > 0) {
+      const normalizedData = data.map((post: any) => this.normalizePostMedia(post));
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return data.map((post: any) => ({
+      return normalizedData.map((post: any) => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
     }
-    return data || [];
+    return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
 
   async getPost(postId: string) {
@@ -386,18 +449,19 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
 
     if (data && data.length > 0) {
+      const normalizedData = data.map((post: any) => this.normalizePostMedia(post));
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return data.map((post: any) => ({
+      return normalizedData.map((post: any) => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
     }
-    return data || [];
+    return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
 
   /**
@@ -425,18 +489,19 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
 
     if (data && data.length > 0) {
+      const normalizedData = data.map((post: any) => this.normalizePostMedia(post));
       const userIds = [...new Set(data.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from('users')
         .select('id, username, full_name, profile_image_url, is_verified')
         .in('id', userIds);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return data.map((post: any) => ({
+      return normalizedData.map((post: any) => ({
         ...post,
         user: userMap.get(post.user_id) || null
       }));
     }
-    return data || [];
+    return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
 
   // ===== Like/Save Status =====
