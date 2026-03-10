@@ -982,16 +982,10 @@ export class PaymentsService {
         redirect_url: dto.redirectUrl,
         cancel_url: cancelUrl,
       },
-      phone_number: dto.phoneNumber,
       customer: {
         firstname: dto.customerFirstName,
         lastname: dto.customerLastName,
         email: dto.customerEmail,
-        address: dto.customerAddress,
-        city: dto.customerCity,
-        state: dto.customerState,
-        postcode: dto.customerPostcode,
-        country: dto.customerCountry,
       },
       webhook_url: this.webhookUrl || undefined,
       metadata,
@@ -3237,7 +3231,18 @@ export class PaymentsService {
     }
 
     if (!res.ok) {
-      throw new BadRequestException(json?.message || 'Payment creation failed');
+      this.logger.warn('Snippe payment error', {
+        status: res.status,
+        response: json,
+        paymentType: payload.payment_type,
+        hasRedirectUrl: !!payload?.details?.redirect_url,
+        hasCallbackUrl: !!payload?.details?.callback_url,
+        hasPhoneNumber: !!payload?.phone_number,
+        metadataKind: payload?.metadata?.kind,
+      });
+      throw new BadRequestException(
+        json?.message || json?.error || json?.detail || 'Payment creation failed',
+      );
     }
     return json as SnippeResponse;
   }
