@@ -295,7 +295,7 @@ export class SupabaseService implements OnModuleInit {
 
   /** Slim columns for feeds (faster network + parsing, no select('*')) */
   private static readonly FEED_POST_SELECT =
-    'id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,video_thumbnail_url,image_url,image_urls,images,views_count,likes_count,comments_count,is_public,post_type';
+    'id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,video_thumbnail_url,image_urls,images,views_count,likes_count,comments_count,is_public,post_type';
 
   private normalizePostMedia(post: any) {
     const normalized = { ...post };
