@@ -874,7 +874,7 @@ export class SupabaseService implements OnModuleInit {
         replies_count,
         created_at,
         updated_at,
-        users:user_id(id, full_name, username, profile_image_url, is_deactivated)
+        users:user_id(id, full_name, username, profile_image_url, is_deactivated, is_verified)
       `)
       .eq('post_id', postId)
       .order('created_at', { ascending: false })
@@ -896,7 +896,7 @@ export class SupabaseService implements OnModuleInit {
         content,
         likes_count,
         created_at,
-        users:user_id(id, full_name, username, profile_image_url, is_deactivated)
+        users:user_id(id, full_name, username, profile_image_url, is_deactivated, is_verified)
       `)
       .in('comment_id', commentIds)
       .order('created_at', { ascending: true });
@@ -934,7 +934,7 @@ export class SupabaseService implements OnModuleInit {
         likes_count,
         replies_count,
         created_at,
-        users:user_id(id, full_name, username, profile_image_url)
+        users:user_id(id, full_name, username, profile_image_url, is_verified)
       `)
       .single();
 

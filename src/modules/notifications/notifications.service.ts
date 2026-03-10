@@ -120,7 +120,11 @@ export class NotificationsService {
     // Don't notify if commenting on own post
     if (data.postOwnerId === data.commenterId) return;
 
-    const actorImage = await this.getUserProfileImage(data.commenterId);
+    const [actorImage, actorIsVerified, postThumbnail] = await Promise.all([
+      this.getUserProfileImage(data.commenterId),
+      this.getUserIsVerified(data.commenterId),
+      this.getPostThumbnail(data.postId),
+    ]);
 
     await this.sendPushNotification({
       userId: data.postOwnerId,
@@ -132,7 +136,12 @@ export class NotificationsService {
       actorUsername: data.commenterName,
       actorAvatar: actorImage,
       postId: data.postId,
-      data: { postId: data.postId, userId: data.commenterId },
+      postThumbnail: postThumbnail ?? undefined,
+      data: {
+        postId: data.postId,
+        userId: data.commenterId,
+        actor_is_verified: actorIsVerified,
+      },
     });
   }
 
@@ -229,6 +238,29 @@ export class NotificationsService {
       return user?.profile_image_url || undefined;
     } catch (_) {
       return undefined;
+    }
+  }
+
+  private async getUserIsVerified(userId: string): Promise<boolean> {
+    try {
+      const user = await this.supabaseService.getUser(userId);
+      return user?.is_verified === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  private async getPostThumbnail(postId: string): Promise<string | null> {
+    try {
+      const client = this.supabaseService.getClient();
+      const { data } = await client
+        .from('posts')
+        .select('thumbnail_url')
+        .eq('id', postId)
+        .maybeSingle();
+      return data?.thumbnail_url || null;
+    } catch (_) {
+      return null;
     }
   }
 }
