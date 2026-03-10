@@ -22,6 +22,18 @@ export class HealthController {
       checks.redis = false;
     }
 
+    // Check Supabase
+    try {
+      const { error } = await this.supabaseService
+        .getClient()
+        .from('users')
+        .select('id')
+        .limit(1);
+      checks.supabase = !error;
+    } catch {
+      checks.supabase = false;
+    }
+
     const healthy = Object.values(checks).every((v) => v);
 
     return {
@@ -219,7 +231,7 @@ export class HealthController {
     deepLinkPath: string;
   }) {
     const playStoreUrl = 'https://play.google.com/store/apps/details?id=com.whapvibez.app';
-    const appStoreUrl = 'https://apps.apple.com/app/whapvibez/id000000000';
+    const appStoreUrl = process.env.IOS_APP_STORE_URL || 'https://apps.apple.com/app/whapvibez';
     const ua = (req.headers['user-agent'] || '').toString();
     const isAndroid = /Android/i.test(ua);
     const deepLink = `whapvibez://${deepLinkPath}`;

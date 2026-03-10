@@ -7,6 +7,7 @@ import {
   UseGuards,
   Headers,
   ParseBoolPipe,
+  ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
 import { FeedService } from './feed.service';
@@ -30,8 +31,8 @@ export class FeedController {
   @Get()
   async getFeed(
     @Query('tab') tab: 'foryou' | 'following' | 'trending' = 'foryou',
-    @Query('limit') limit: number = 20,
-    @Query('offset') offset: number = 0,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
     @Query('cursor') queryCursor?: string,
     @Headers('authorization') authHeader?: string,
   ) {
@@ -96,8 +97,8 @@ export class FeedController {
   @Get('profile/:userId')
   async getProfileFeed(
     @Param('userId') profileUserId: string,
-    @Query('limit') limit: number = 20,
-    @Query('offset') offset: number = 0,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
     @Query('videoOnly', new ParseBoolPipe({ optional: true })) videoOnly?: boolean,
     @Headers('authorization') authHeader?: string,
   ) {

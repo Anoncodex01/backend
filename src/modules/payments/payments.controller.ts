@@ -63,11 +63,6 @@ export class PaymentsController {
     return this.paymentsService.reconcilePayments();
   }
 
-  @Get(':reference')
-  async getStatus(@Param('reference') reference: string) {
-    return this.paymentsService.getPaymentStatus(reference);
-  }
-
   @UseGuards(AuthGuard)
   @Post('withdraw')
   async withdraw(@CurrentUser() userId: string, @Body() dto: CreateWithdrawalDto) {
@@ -171,5 +166,11 @@ export class PaymentsController {
       });
       throw error;
     }
+  }
+
+  // Keep this catch-all LAST so it does not shadow the named routes above
+  @Get(':reference')
+  async getStatus(@Param('reference') reference: string) {
+    return this.paymentsService.getPaymentStatus(reference);
   }
 }

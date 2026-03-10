@@ -8,26 +8,17 @@ export class AgoraService {
   private appCertificate: string;
 
   constructor(private configService: ConfigService) {
-    // Get App ID - should be: 8ef13bee068a4154871a389a56caffe5
-    this.appId = this.configService.get('AGORA_APP_ID') || '8ef13bee068a4154871a389a56caffe5';
-    
-    // Get Certificate - use fallback from Supabase function if not in env
-    // Fallback certificate: 7bf012ab53904bd48030a1e4b0a796f4
-    this.appCertificate = this.configService.get('AGORA_APP_CERTIFICATE') || '7bf012ab53904bd48030a1e4b0a796f4';
-    
-    // Validate configuration on startup
-    console.log(`📋 Agora Configuration:`);
-    console.log(`   App ID: ${this.appId.substring(0, 8)}...${this.appId.substring(this.appId.length - 4)}`);
-    console.log(`   Certificate: ${this.appCertificate.substring(0, 8)}...${this.appCertificate.substring(this.appCertificate.length - 4)} (${this.appCertificate.length} chars)`);
-    
+    this.appId = this.configService.get<string>('AGORA_APP_ID', '');
+    this.appCertificate = this.configService.get<string>('AGORA_APP_CERTIFICATE', '');
+
     if (!this.appId || this.appId.length < 10) {
-      console.error('❌ AGORA_APP_ID is invalid!');
+      console.error('❌ AGORA_APP_ID is not set or invalid. Set AGORA_APP_ID in your environment.');
     } else {
-      console.log(`✅ Agora App ID configured`);
+      console.log(`✅ Agora App ID configured (${this.appId.substring(0, 4)}...)`);
     }
-    
+
     if (!this.appCertificate || this.appCertificate.length < 10) {
-      console.error('❌ AGORA_APP_CERTIFICATE is invalid!');
+      console.error('❌ AGORA_APP_CERTIFICATE is not set or invalid. Set AGORA_APP_CERTIFICATE in your environment.');
     } else {
       console.log(`✅ Agora Certificate configured`);
     }
