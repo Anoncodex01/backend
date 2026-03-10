@@ -465,7 +465,7 @@ export class SupabaseService implements OnModuleInit {
   }
 
   /**
-   * Get reels feed: video-only posts (slim select, cursor pagination)
+   * Get reels feed: mixed media posts (video + image, slim select, cursor pagination)
    */
   async getReelsPosts(limit = 20, offset = 0, cursor?: string, createdAfter?: string) {
     let query = this.client
@@ -473,7 +473,19 @@ export class SupabaseService implements OnModuleInit {
       .select(SupabaseService.FEED_POST_SELECT)
       .eq('is_public', true)
       .eq('is_draft', false)
-      .or('video_url.not.is.null,video_path.not.is.null,stream_uid.not.is.null')
+      // Reels supports both videos and image posts in the app.
+      .or(
+        [
+          'post_type.eq.video',
+          'post_type.eq.image',
+          'video_url.not.is.null',
+          'video_path.not.is.null',
+          'stream_uid.not.is.null',
+          'image_urls.not.is.null',
+          'image_url.not.is.null',
+          'images.not.is.null',
+        ].join(','),
+      )
       .order('created_at', { ascending: false })
       .order('id', { ascending: false });
 
