@@ -981,11 +981,19 @@ export class PaymentsService {
 
     const normalizedPhone = this.normalizePhoneForCard(dto.phoneNumber);
     const normalizedCountry = (dto.customerCountry || 'TZ').toString().trim().toUpperCase().slice(0, 2);
-    const normalizedCity = (dto.customerCity || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
-    const normalizedState = this.normalizeRegion(dto.customerState || normalizedCity);
+    const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
+    const normalizedCity = this.normalizeCardCity(
+      dto.customerCity,
+      dto.customerState,
+      normalizedAddress,
+      normalizedCountry,
+    );
+    const normalizedState = this.normalizeRegion(
+      dto.customerState || dto.customerCity || normalizedAddress,
+      normalizedCountry,
+    );
     const rawPostcode = (dto.customerPostcode || '').toString().trim();
     const normalizedPostcode = (rawPostcode === '' || rawPostcode === '00000') ? '14101' : rawPostcode;
-    const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
     const normalizedEmail = (dto.customerEmail || 'support@whapvibez.com').toString().trim();
 
     const firstname = dto.customerFirstName.toString().trim() || 'Customer';
@@ -2473,6 +2481,37 @@ export class PaymentsService {
       return;
     }
 
+    const hasLikelyDuplicateCampaign = async () => {
+      const headline = metadata.headline
+        ? String(metadata.headline)
+        : String(metadata.goal_label || 'Get sales');
+      const dailyBudget = Number(metadata.daily_budget_tzs || 0);
+      const totalBudget = Number(metadata.total_budget_tzs || 0);
+      const createdSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+      const { data: similar, error } = await client
+        .from('shop_ads')
+        .select('id, created_at')
+        .eq('shop_id', shopId)
+        .eq('product_id', productId)
+        .eq('created_by', userId)
+        .eq('status', 'active')
+        .eq('headline', headline)
+        .eq('daily_budget_tzs', dailyBudget)
+        .eq('total_budget_tzs', totalBudget)
+        .gte('created_at', createdSince)
+        .limit(1);
+
+      if (error) {
+        this.logger.warn(
+          `shop_advertisement duplicate-check fallback failed: ${error.message}`,
+        );
+        return false;
+      }
+
+      return Array.isArray(similar) && similar.length > 0;
+    };
+
     try {
       const { data: existing } = await client
         .from('shop_ads')
@@ -2484,7 +2523,14 @@ export class PaymentsService {
       }
     } catch (e: any) {
       const msg = (e?.message || '').toString().toLowerCase();
-      if (!msg.includes('payment_reference')) {
+      if (msg.includes('payment_reference')) {
+        if (await hasLikelyDuplicateCampaign()) {
+          this.logger.warn(
+            `Shop advertisement for reference ${reference} skipped by fallback duplicate detection.`,
+          );
+          return;
+        }
+      } else {
         this.logger.warn(`shop_advertisement existing-check failed: ${e?.message || e}`);
       }
     }
@@ -2520,8 +2566,25 @@ export class PaymentsService {
         // If payment_reference constraint fails (duplicate reference),
         // we assume the ad is already active and do NOT insert another row.
         if (msg.includes('payment_reference')) {
-          this.logger.warn(
-            `Shop advertisement for reference ${reference} already exists (payment_reference conflict); skipping duplicate insert.`,
+          if (await hasLikelyDuplicateCampaign()) {
+            this.logger.warn(
+              `Shop advertisement for reference ${reference} already exists or payment_reference column is unavailable; skipping duplicate insert.`,
+            );
+            return;
+          }
+
+          const { payment_reference: _ignoredPaymentReference, ...rowWithoutRef } =
+            rowWithRef;
+          const { error: fallbackInsertError } = await client
+            .from('shop_ads')
+            .insert(rowWithoutRef);
+
+          if (!fallbackInsertError) {
+            return;
+          }
+
+          this.logger.error(
+            `Failed fallback activation for shop_advertisement ${reference}: ${fallbackInsertError.message}`,
           );
           return;
         }
@@ -3317,11 +3380,43 @@ export class PaymentsService {
     return (phone || '').trim();
   }
 
-  private normalizeRegion(region: string): string {
+  private normalizeRegion(region: string, country = 'TZ'): string {
     const value = (region || '').toString().trim();
-    if (!value) return 'DSM';
-    if (/dar\s*es\s*salaam/i.test(value)) return 'DSM';
+    if ((country || '').toUpperCase() === 'TZ') {
+      if (!value) return 'DSM';
+      if (
+        /dar\s*es\s*salaam|mbezi|mbez|mwenge|masaki|upanga|kariakoo|ilala|temeke|kinondoni|ubungo|kigamboni/i.test(
+          value,
+        )
+      ) {
+        return 'DSM';
+      }
+    }
     return value;
+  }
+
+  private normalizeCardCity(
+    city: string | undefined,
+    state: string | undefined,
+    address: string | undefined,
+    country = 'TZ',
+  ): string {
+    const candidates = [city, state, address]
+      .map((v) => (v || '').toString().trim())
+      .filter(Boolean)
+      .join(' ');
+
+    if ((country || '').toUpperCase() === 'TZ') {
+      if (
+        /dar\s*es\s*salaam|mbezi|mbez|mwenge|masaki|upanga|kariakoo|ilala|temeke|kinondoni|ubungo|kigamboni/i.test(
+          candidates,
+        )
+      ) {
+        return 'Dar es Salaam';
+      }
+    }
+
+    return (city || '').toString().trim() || 'Dar es Salaam';
   }
 
   private safeUrlHost(input: string): string | null {
