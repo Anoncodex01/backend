@@ -973,6 +973,14 @@ export class PaymentsService {
       ...(dto.metadata || {}),
     };
 
+    const normalizedPhone = this.normalizePhoneForCard(dto.phoneNumber);
+    const normalizedCountry = (dto.customerCountry || 'TZ').toString().trim().toUpperCase();
+    const normalizedCity = (dto.customerCity || 'Dar es Salaam').toString().trim();
+    const normalizedState = this.normalizeRegion(dto.customerState || normalizedCity);
+    const normalizedPostcode = (dto.customerPostcode || '14101').toString().trim();
+    const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim();
+    const normalizedEmail = (dto.customerEmail || 'support@whapvibez.com').toString().trim();
+
     const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
     const payload = {
       payment_type: 'card',
@@ -982,20 +990,39 @@ export class PaymentsService {
         redirect_url: dto.redirectUrl,
         cancel_url: cancelUrl,
       },
-      phone_number: dto.phoneNumber,
+      phone_number: normalizedPhone,
       customer: {
-        firstname: dto.customerFirstName,
-        lastname: dto.customerLastName,
-        email: dto.customerEmail,
-        address: dto.customerAddress,
-        city: dto.customerCity,
-        state: dto.customerState,
-        postcode: dto.customerPostcode,
-        country: dto.customerCountry,
+        firstname: dto.customerFirstName.toString().trim(),
+        lastname: dto.customerLastName.toString().trim(),
+        email: normalizedEmail,
+        address: normalizedAddress,
+        city: normalizedCity,
+        state: normalizedState,
+        postcode: normalizedPostcode,
+        country: normalizedCountry,
       },
       webhook_url: this.webhookUrl || undefined,
       metadata,
     };
+
+    this.logger.log('Creating card payment intent', {
+      amount: dto.amount,
+      currency: dto.currency,
+      kind: metadata.kind,
+      orderId: metadata.order_id,
+      phoneNumber: normalizedPhone.replace(/\d(?=\d{4})/g, '*'),
+      redirectUrlHost: this.safeUrlHost(dto.redirectUrl),
+      cancelUrlHost: this.safeUrlHost(cancelUrl),
+      customer: {
+        firstname: payload.customer.firstname,
+        lastname: payload.customer.lastname,
+        email: normalizedEmail.replace(/(^.).*(@.*$)/, '$1***$2'),
+        city: normalizedCity,
+        state: normalizedState,
+        postcode: normalizedPostcode,
+        country: normalizedCountry,
+      },
+    });
 
     const response = await this.postToSnippe(payload, idempotencyKey);
     await this.logAdminEvent({
@@ -3260,6 +3287,29 @@ export class PaymentsService {
     if (digits.length === 9) return '255' + digits;
     if (digits.length === 12 && digits.startsWith('255')) return digits;
     return phone;
+  }
+
+  private normalizePhoneForCard(phone: string): string {
+    let digits = (phone || '').replace(/\D/g, '');
+    if (digits.startsWith('0')) digits = digits.slice(1);
+    if (digits.length === 9) return `255${digits}`;
+    if (digits.length === 12 && digits.startsWith('255')) return digits;
+    return (phone || '').trim();
+  }
+
+  private normalizeRegion(region: string): string {
+    const value = (region || '').toString().trim();
+    if (!value) return 'DSM';
+    if (/dar\s*es\s*salaam/i.test(value)) return 'DSM';
+    return value;
+  }
+
+  private safeUrlHost(input: string): string | null {
+    try {
+      return new URL(input).host;
+    } catch {
+      return null;
+    }
   }
 
   private async postToSnippePayout(payload: Record<string, any>, idempotencyKey: string): Promise<any> {
