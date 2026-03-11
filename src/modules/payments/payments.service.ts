@@ -973,27 +973,36 @@ export class PaymentsService {
       ...(dto.metadata || {}),
     };
 
+    // Per Snippe docs: amount in smallest currency unit (integer), all customer fields required
+    const amountInteger = Math.round(Number(dto.amount)) || 1;
+    if (amountInteger < 1) {
+      throw new BadRequestException('Amount must be at least 1');
+    }
+
     const normalizedPhone = this.normalizePhoneForCard(dto.phoneNumber);
-    const normalizedCountry = (dto.customerCountry || 'TZ').toString().trim().toUpperCase();
-    const normalizedCity = (dto.customerCity || 'Dar es Salaam').toString().trim();
+    const normalizedCountry = (dto.customerCountry || 'TZ').toString().trim().toUpperCase().slice(0, 2);
+    const normalizedCity = (dto.customerCity || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
     const normalizedState = this.normalizeRegion(dto.customerState || normalizedCity);
-    const normalizedPostcode = (dto.customerPostcode || '14101').toString().trim();
-    const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim();
+    const rawPostcode = (dto.customerPostcode || '').toString().trim();
+    const normalizedPostcode = (rawPostcode === '' || rawPostcode === '00000') ? '14101' : rawPostcode;
+    const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
     const normalizedEmail = (dto.customerEmail || 'support@whapvibez.com').toString().trim();
 
+    const firstname = dto.customerFirstName.toString().trim() || 'Customer';
+    const lastname = dto.customerLastName.toString().trim() || 'Customer';
+
     const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
-    const payload = {
+    const payload: Record<string, any> = {
       payment_type: 'card',
       details: {
-        amount: dto.amount,
+        amount: amountInteger,
         currency: dto.currency,
         redirect_url: dto.redirectUrl,
         cancel_url: cancelUrl,
       },
-      phone_number: normalizedPhone,
       customer: {
-        firstname: dto.customerFirstName.toString().trim(),
-        lastname: dto.customerLastName.toString().trim(),
+        firstname,
+        lastname,
         email: normalizedEmail,
         address: normalizedAddress,
         city: normalizedCity,
@@ -1004,13 +1013,17 @@ export class PaymentsService {
       webhook_url: this.webhookUrl || undefined,
       metadata,
     };
+    // phone_number is optional per Snippe docs - omit if empty to avoid validation errors
+    if (normalizedPhone && normalizedPhone.length > 0) {
+      payload.phone_number = normalizedPhone;
+    }
 
     this.logger.log('Creating card payment intent', {
-      amount: dto.amount,
+      amount: amountInteger,
       currency: dto.currency,
       kind: metadata.kind,
       orderId: metadata.order_id,
-      phoneNumber: normalizedPhone.replace(/\d(?=\d{4})/g, '*'),
+      phoneNumber: normalizedPhone ? normalizedPhone.replace(/\d(?=\d{4})/g, '*') : '(omitted)',
       redirectUrlHost: this.safeUrlHost(dto.redirectUrl),
       cancelUrlHost: this.safeUrlHost(cancelUrl),
       customer: {
@@ -3264,18 +3277,25 @@ export class PaymentsService {
     }
 
     if (!res.ok) {
+      const message = json?.message || json?.error || json?.detail || 'Payment creation failed';
+      const errorCode = json?.error_code;
+      const details = json?.details;
       this.logger.warn('Snippe payment error', {
         status: res.status,
+        errorCode,
+        message,
+        details,
         response: json,
         paymentType: payload.payment_type,
         hasRedirectUrl: !!payload?.details?.redirect_url,
-        hasCallbackUrl: !!payload?.details?.callback_url,
+        hasCancelUrl: !!payload?.details?.cancel_url,
         hasPhoneNumber: !!payload?.phone_number,
         metadataKind: payload?.metadata?.kind,
       });
-      throw new BadRequestException(
-        json?.message || json?.error || json?.detail || 'Payment creation failed',
-      );
+      const userMessage = details && typeof details === 'object'
+        ? `${message}: ${JSON.stringify(details)}`
+        : message;
+      throw new BadRequestException(userMessage);
     }
     return json as SnippeResponse;
   }
