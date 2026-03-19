@@ -15,7 +15,8 @@ export class FeedService {
     private configService: ConfigService,
   ) {
     this.feedTtl = this.configService.get('CACHE_FEED_TTL', 30);
-    this.trendingTtl = this.configService.get('CACHE_TRENDING_TTL', 120);
+    // Reduced from 120s → 30s so newly posted videos surface faster.
+    this.trendingTtl = this.configService.get('CACHE_TRENDING_TTL', 30);
     // Keep first reels page hot for longer to reduce DB pressure and cold starts.
     this.reelsTtl = this.configService.get('CACHE_REELS_TTL', 45);
   }

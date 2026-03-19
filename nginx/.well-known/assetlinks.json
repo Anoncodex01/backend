@@ -1,0 +1,14 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.whapvibez.app",
+      "sha256_cert_fingerprints": [
+        "97:E9:D4:0C:C1:EF:83:43:A7:FD:EB:76:69:94:D4:4E:81:19:CF:57:3F:E1:7E:61:70:26:FD:D5:D5:FC:D6:CD",
+        "3D:AB:14:01:D4:DF:80:00:FD:0D:EA:CA:74:8F:47:B6:6A:C7:B2:9D:71:9C:78:B3:D7:33:54:1C:33:10:FC:01",
+        "A4:B5:23:EC:0E:AD:C5:09:9F:89:DE:DC:92:71:BA:7B:25:34:97:59:99:2B:8E:B9:F1:24:10:06:E2:E7:62:8B"
+      ]
+    }
+  }
+]

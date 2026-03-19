@@ -429,39 +429,80 @@ export class SupabaseService implements OnModuleInit {
   }
 
   async getTrendingPosts(limit = 20, offset = 0, cursor?: string) {
+    // --- Hybrid scoring: fetch a larger pool and rank with time-decay in JS ---
+    // We fetch (limit * 5) candidates sorted loosely by recency so we have enough
+    // variety, then re-rank them with a HN-style score and splice in a "freshness
+    // boost" slot for posts under 4 hours old that haven't surfaced yet.
+    const poolSize = Math.max(limit * 5, 100);
+
     let query = this.client
       .from('posts')
       .select(SupabaseService.FEED_POST_SELECT)
       .eq('is_public', true)
       .eq('is_draft', false)
-      .order('views_count', { ascending: false })
-      .order('likes_count', { ascending: false })
+      // Broad recency window: last 30 days for the scoring pool
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .order('created_at', { ascending: false })
       .order('id', { ascending: false });
 
     if (cursor) {
-      query = query.lt('created_at', cursor).limit(limit);
+      query = query.lt('created_at', cursor).limit(poolSize);
     } else {
-      query = query.range(offset, offset + limit - 1);
+      query = query.range(offset, offset + poolSize - 1);
     }
 
-    const { data, error } = await query;
+    const { data: pool, error } = await query;
     if (error) throw error;
+    if (!pool || pool.length === 0) return [];
 
-    if (data && data.length > 0) {
-      const normalizedData = data.map((post: any) => this.normalizePostMedia(post));
-      const userIds = [...new Set(data.map((p: any) => p.user_id))];
-      const { data: users } = await this.client
-        .from('users')
-        .select('id, username, full_name, profile_image_url, is_verified')
-        .in('id', userIds);
-      const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return normalizedData.map((post: any) => ({
-        ...post,
-        user: userMap.get(post.user_id) || null
-      }));
+    const now = Date.now();
+    const GRAVITY = 1.5; // higher = faster decay for old posts
+
+    const scored = pool.map((post: any) => {
+      const ageHours = Math.max(
+        (now - new Date(post.created_at).getTime()) / (1000 * 60 * 60),
+        0,
+      );
+      const views   = (post.views_count   || 0) as number;
+      const likes   = (post.likes_count   || 0) as number;
+      const comments = (post.comments_count || 0) as number;
+      const shares  = (post.shares_count  || 0) as number;
+      // Engagement points: likes/comments/shares are worth more than passive views
+      const engagement = likes * 3 + comments * 5 + shares * 4 + views * 0.1;
+      // HN-style time-decay score; +2 prevents division-by-zero & gives new posts a head-start
+      const score = engagement / Math.pow(ageHours + 2, GRAVITY);
+      return { post, score, ageHours };
+    });
+
+    // Sort by score descending
+    scored.sort((a: any, b: any) => b.score - a.score);
+
+    // Freshness boost: pick up to 3 posts under 4 h old and inject them into positions 0-2
+    const freshCandidates = scored.filter((s: any) => s.ageHours < 4);
+    const boosted: any[] = [];
+    for (let i = 0; i < Math.min(3, freshCandidates.length); i++) {
+      boosted.push(freshCandidates[i]);
     }
-    return (data || []).map((post: any) => this.normalizePostMedia(post));
+    // Fill remaining slots from the scored list (skip already-boosted)
+    const boostedPostIds = new Set(boosted.map((s: any) => s.post.id));
+    for (const s of scored) {
+      if (boosted.length >= limit) break;
+      if (!boostedPostIds.has(s.post.id)) boosted.push(s);
+    }
+
+    const ranked = boosted.slice(0, limit).map((s: any) => s.post);
+
+    const normalizedData = ranked.map((post: any) => this.normalizePostMedia(post));
+    const userIds = [...new Set(ranked.map((p: any) => p.user_id))];
+    const { data: users } = await this.client
+      .from('users')
+      .select('id, username, full_name, profile_image_url, is_verified')
+      .in('id', userIds);
+    const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+    return normalizedData.map((post: any) => ({
+      ...post,
+      user: userMap.get(post.user_id) || null,
+    }));
   }
 
   /**

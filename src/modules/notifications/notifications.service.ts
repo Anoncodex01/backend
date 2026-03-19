@@ -34,6 +34,13 @@ export class NotificationsService {
    */
   async sendPushNotification(payload: NotificationPayload) {
     try {
+      // Always store notification in database first, regardless of FCM tokens
+      try {
+        await this.supabaseService.createNotification(payload);
+      } catch (dbError) {
+        console.error('Error storing notification in database:', dbError);
+      }
+
       // Get user's FCM tokens
       const tokens = await this.authService.getFcmTokens(payload.userId);
 
@@ -56,9 +63,6 @@ export class NotificationsService {
           ),
         },
       });
-
-      // Store notification in database
-      await this.supabaseService.createNotification(payload);
 
       return {
         sent: true,

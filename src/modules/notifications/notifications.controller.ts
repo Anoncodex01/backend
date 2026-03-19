@@ -19,6 +19,15 @@ export class SendNotificationDto {
   @IsString()
   body: string;
   @IsOptional()
+  @IsString()
+  actorId?: string;
+  @IsOptional()
+  @IsString()
+  actorUsername?: string;
+  @IsOptional()
+  @IsString()
+  actorAvatar?: string;
+  @IsOptional()
   @IsObject()
   data?: Record<string, any>;
   @IsOptional()
