@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Param,
+  Post,
   UseGuards,
 } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
@@ -69,5 +70,26 @@ export class AnalyticsController {
       data: analytics,
     };
   }
-}
 
+  @Get('monetization/me')
+  @UseGuards(AuthGuard)
+  async getMyMonetization(@CurrentUser() userId: string) {
+    const summary = await this.analyticsService.getCreatorMonetizationSummary(userId);
+
+    return {
+      success: true,
+      data: summary,
+    };
+  }
+
+  @Post('monetization/apply')
+  @UseGuards(AuthGuard)
+  async applyForMonetization(@CurrentUser() userId: string) {
+    const result = await this.analyticsService.applyForCreatorMonetization(userId);
+
+    return {
+      success: true,
+      data: result,
+    };
+  }
+}
