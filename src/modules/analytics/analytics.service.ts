@@ -11,6 +11,7 @@ type MonetizationRequirementSummary = {
   views30dRequired: number;
   views30dCurrent: number;
   payoutMethodConnected: boolean;
+  isVerified: boolean;
 };
 
 @Injectable()
@@ -357,7 +358,7 @@ export class AnalyticsService {
       await Promise.all([
         client
           .from('users')
-          .select('id, username, full_name, profile_image_url, followers_count')
+          .select('id, username, full_name, profile_image_url, followers_count, is_verified')
           .eq('id', userId)
           .maybeSingle(),
         client
@@ -410,6 +411,8 @@ export class AnalyticsService {
       0,
     );
 
+    const isVerified = Boolean(profile.is_verified);
+
     const requirements: MonetizationRequirementSummary = {
       followersRequired: this.monetizationFollowersRequirement,
       followersCurrent,
@@ -418,13 +421,15 @@ export class AnalyticsService {
       views30dRequired: this.monetizationViews30dRequirement,
       views30dCurrent,
       payoutMethodConnected: Boolean(payoutMethod),
+      isVerified,
     };
 
     const isEligible =
       followersCurrent >= this.monetizationFollowersRequirement &&
       videosCurrent >= this.monetizationVideosRequirement &&
       views30dCurrent >= this.monetizationViews30dRequirement &&
-      Boolean(payoutMethod);
+      Boolean(payoutMethod) &&
+      isVerified;
 
     const postIds = posts.map((post) => post.id).filter(Boolean);
     let windowViews: any[] = [];

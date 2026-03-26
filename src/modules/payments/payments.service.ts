@@ -350,8 +350,23 @@ export class PaymentsService {
     const kycRequired = !!activeSub && kycStatus !== 'approved';
     const isVerified = !!activeSub && kycStatus === 'approved';
     try {
-      await client.from('users').update({ is_verified: isVerified }).eq('id', userId);
-      await this.invalidateUserVerificationCaches(userId);
+      if (isVerified) {
+        // Always grant the badge when conditions are met
+        await client.from('users').update({ is_verified: true }).eq('id', userId);
+        await this.invalidateUserVerificationCaches(userId);
+      } else {
+        // Only revoke the badge if the user has subscription history.
+        // This prevents resetting is_verified on brand-new accounts that were
+        // briefly set to true by the old email-confirmation trigger.
+        const { count } = await client
+          .from('user_verification_subscriptions')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', userId);
+        if (count && count > 0) {
+          await client.from('users').update({ is_verified: false }).eq('id', userId);
+          await this.invalidateUserVerificationCaches(userId);
+        }
+      }
     } catch {
       // Don't fail status endpoint if profile sync fails
     }
@@ -953,6 +968,7 @@ export class PaymentsService {
       await this.redis.del(`user:${userId}`);
       await this.redis.del(`user:profile:${userId}`);
       await this.redis.del(`user:stats:${userId}`);
+      await this.redis.del(`analytics:monetization:${userId}`);
       await this.redis.deletePattern(`user:posts:${userId}:*`);
     } catch (error) {
       this.logger.warn(`Failed to invalidate verification caches for ${userId}: ${error}`);
