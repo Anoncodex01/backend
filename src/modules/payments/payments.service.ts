@@ -620,8 +620,23 @@ export class PaymentsService {
         if (!dto.redirectUrl) {
           throw new BadRequestException('redirectUrl is required for card payment');
         }
+        const normalizedPhone = this.normalizePhoneForCard(dto.phoneNumber || '');
+        const normalizedCountry = (dto.customerCountry || 'TZ').toString().trim().toUpperCase().slice(0, 2);
+        const normalizedAddress = (dto.customerAddress || 'Dar es Salaam').toString().trim() || 'Dar es Salaam';
+        const normalizedCity = this.normalizeCardCity(
+          dto.customerCity,
+          dto.customerState,
+          normalizedAddress,
+          normalizedCountry,
+        );
+        const normalizedState = this.normalizeRegion(
+          dto.customerState || dto.customerCity || normalizedAddress,
+          normalizedCountry,
+        );
+        const rawPostcode = (dto.customerPostcode || '').toString().trim();
+        const normalizedPostcode = (rawPostcode == '' || rawPostcode == '00000') ? '14101' : rawPostcode;
         const cancelUrl = dto.cancelUrl || dto.redirectUrl.replace(/\/[^/]*$/, '/cancelled');
-        const payload = {
+        const payload: Record<string, any> = {
           payment_type: 'card',
           details: {
             amount: plan.price_tzs,
@@ -633,10 +648,18 @@ export class PaymentsService {
             firstname: firstName,
             lastname: lastName,
             email: customerEmail,
+            address: normalizedAddress,
+            city: normalizedCity,
+            state: normalizedState,
+            postcode: normalizedPostcode,
+            country: normalizedCountry,
           },
           webhook_url: this.webhookUrl || undefined,
           metadata,
         };
+        if (normalizedPhone && normalizedPhone.length > 0) {
+          payload.phone_number = normalizedPhone;
+        }
         response = await this.postToSnippe(payload, idempotencyKey);
       }
 

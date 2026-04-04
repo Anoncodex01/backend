@@ -36,4 +36,24 @@ export class CreateVerificationSubscriptionDto {
   @IsOptional()
   @IsString()
   customerEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  customerAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  customerCity?: string;
+
+  @IsOptional()
+  @IsString()
+  customerState?: string;
+
+  @IsOptional()
+  @IsString()
+  customerPostcode?: string;
+
+  @IsOptional()
+  @IsString()
+  customerCountry?: string;
 }
