@@ -523,8 +523,6 @@ export class SupabaseService implements OnModuleInit {
           'video_path.not.is.null',
           'stream_uid.not.is.null',
           'image_urls.not.is.null',
-          'image_url.not.is.null',
-          'images.not.is.null',
         ].join(','),
       )
       .order('created_at', { ascending: false })
