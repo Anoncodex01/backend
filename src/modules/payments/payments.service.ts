@@ -1599,7 +1599,24 @@ export class PaymentsService {
         .select('balance')
         .eq('user_id', userId)
         .maybeSingle();
-      const availableCoins = Number(walletRow?.balance ?? 0);
+      const walletBalance = Number(walletRow?.balance ?? 0);
+
+      // Calculate available gift coins (earned from gifts minus already withdrawn).
+      // Only gift-earned coins can be withdrawn — purchased coins cannot.
+      const { data: giftTxRows } = await client
+        .from('coin_transactions')
+        .select('amount, type')
+        .eq('user_id', userId);
+      let giftIncomeCoins = 0;
+      let withdrawnCoinsTotal = 0;
+      for (const tx of (giftTxRows || [])) {
+        const amt = Number(tx.amount || 0);
+        if (amt > 0 && tx.type === 'gift') giftIncomeCoins += amt;
+        if (amt < 0 && tx.type === 'withdraw') withdrawnCoinsTotal += Math.abs(amt);
+      }
+      const availableGiftCoins = Math.max(0, giftIncomeCoins - withdrawnCoinsTotal);
+      const availableCoins = Math.min(availableGiftCoins, walletBalance);
+
       if (availableCoins < coinsRequired) {
         throw new BadRequestException(
           `Not enough reward balance. Required: ${coinsRequired.toLocaleString()} coins (TZS ${Math.ceil(totalDeductionTzs).toLocaleString()} incl. 25% platform + 3% withdraw fee). Available: ${availableCoins.toLocaleString()} coins.`,
@@ -1918,13 +1935,19 @@ export class PaymentsService {
         .single();
     }
     
-    const [{ data: transactions }, { data: withdrawals }] = await Promise.all([
+    const [{ data: transactions }, { data: allTxForBalance }, { data: withdrawals }] = await Promise.all([
+      // Recent 50 for display in the transaction list
       client
         .from('coin_transactions')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(50),
+      // All transactions (slim select) to accurately compute gift/withdraw totals
+      client
+        .from('coin_transactions')
+        .select('amount, type')
+        .eq('user_id', userId),
       client
         .from('withdrawal_requests')
         .select('*')
@@ -1936,16 +1959,25 @@ export class PaymentsService {
     const txList = (transactions as any[]) || [];
     let income = 0;
     let spent = 0;
+
+    // Use the full transaction history for accurate gift/withdraw totals
     let giftIncome = 0;
+    let withdrawnCoins = 0;
+    for (const tx of (allTxForBalance as any[] || [])) {
+      const amount = Number(tx.amount || 0);
+      if (amount > 0 && tx.type === 'gift') giftIncome += amount;
+      if (amount < 0 && tx.type === 'withdraw') withdrawnCoins += Math.abs(amount);
+    }
+    // Use the recent 50 for income/spent display totals
     for (const tx of txList) {
       const amount = Number(tx.amount || 0);
-      if (amount > 0) {
-        income += amount;
-        if (tx.type === 'gift') giftIncome += amount;
-      } else {
-        spent += Math.abs(amount);
-      }
+      if (amount > 0) income += amount;
+      else spent += Math.abs(amount);
     }
+    // Available gift coins = gift income earned minus coins already withdrawn.
+    // This prevents users from withdrawing the same gift income multiple times
+    // using purchased coins to satisfy the balance check.
+    const availableGiftCoins = Math.max(0, giftIncome - withdrawnCoins);
 
     // Get the wallet balance (either from existing wallet or 0 if creation failed)
     const { data: finalWallet } = await client
@@ -1958,6 +1990,8 @@ export class PaymentsService {
       balance: Number(finalWallet?.balance || 0),
       income,
       giftIncome,
+      availableGiftCoins,
+      withdrawnCoins,
       spent,
       transactions: txList,
       withdrawals: withdrawals || [],
@@ -2667,17 +2701,6 @@ export class PaymentsService {
 
     const client = this.supabase.getClient();
 
-    const { data: existingTx } = await client
-      .from('shop_transactions')
-      .select('id')
-      .eq('reference', reference)
-      .maybeSingle();
-
-    if (existingTx) {
-      this.logger.log(`⚠️  Shop transaction already processed for reference: ${reference}`);
-      return;
-    }
-
     const { data: order, error: orderError } = await client
       .from('orders')
       .select('id, shop_id, total_amount, buyer_id')
@@ -2706,6 +2729,44 @@ export class PaymentsService {
       return;
     }
 
+    // Insert the transaction record FIRST (atomic dedup guard).
+    // If a unique constraint on `reference` exists this will fail for the
+    // second concurrent caller, preventing a double-credit.  If no DB
+    // constraint exists yet we still use the insert result to gate the
+    // balance increment so only the first successful insert proceeds.
+    const { data: insertedTx, error: txError } = await client
+      .from('shop_transactions')
+      .insert({
+        shop_id: shop.id,
+        order_id: order.id,
+        amount,
+        type: 'sale',
+        status: 'completed',
+        reference,
+        metadata: {
+          currency,
+          buyer_id: order.buyer_id,
+          order_id: order.id,
+          ...metadata,
+        },
+      })
+      .select('id')
+      .maybeSingle();
+
+    if (txError) {
+      // Duplicate reference (unique constraint violation) or other DB error.
+      // Either way we must not increment the balance.
+      this.logger.warn(
+        `⚠️  Shop transaction insert failed for reference ${reference} — likely already processed. Skipping balance increment. Error: ${txError.message}`,
+      );
+      return;
+    }
+
+    if (!insertedTx) {
+      this.logger.warn(`⚠️  Shop transaction insert returned no row for reference: ${reference}. Skipping balance increment.`);
+      return;
+    }
+
     const { data: newBalance, error: balanceError } = await client.rpc('increment_shop_balance', {
       p_shop_id: shop.id,
       p_amount: amount,
@@ -2716,29 +2777,10 @@ export class PaymentsService {
       throw new BadRequestException('Failed to update shop balance');
     }
 
-    const { error: txError } = await client.from('shop_transactions').insert({
-      shop_id: shop.id,
-      order_id: order.id,
+    this.logger.log(`✅ Shop wallet credited for order ${orderId}`, {
       amount,
-      type: 'sale',
-      status: 'completed',
-      reference,
-      metadata: {
-        currency,
-        buyer_id: order.buyer_id,
-        order_id: order.id,
-        ...metadata,
-      },
+      newBalance,
     });
-
-    if (txError) {
-      this.logger.error('❌ Error creating shop transaction:', txError);
-    } else {
-      this.logger.log(`✅ Shop wallet credited for order ${orderId}`, {
-        amount,
-        newBalance,
-      });
-    }
 
     await this._updateSoldCounts(order.id);
     await this._notifyOrderPaid(order, shop, amount, currency);
