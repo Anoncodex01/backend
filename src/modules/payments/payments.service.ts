@@ -1797,12 +1797,7 @@ export class PaymentsService {
       throw new BadRequestException('Please add a shop payout method in settings');
     }
 
-    const { data: walletRow } = await client
-      .from('shop_wallets')
-      .select('balance')
-      .eq('shop_id', shop.id)
-      .maybeSingle();
-    const walletBalance = Number(walletRow?.balance ?? 0);
+    const walletBalance = await this.reconcileShopWalletBalance(client, shop.id);
     if (walletBalance < dto.amount) {
       throw new BadRequestException('Not enough shop balance');
     }
@@ -3223,6 +3218,56 @@ export class PaymentsService {
     }
   }
 
+  private async reconcileShopWalletBalance(client: any, shopId: string) {
+    const [{ data: txRows }, { data: withdrawalRows }, { data: walletRow }] = await Promise.all([
+      client
+        .from('shop_transactions')
+        .select('amount, type, status')
+        .eq('shop_id', shopId),
+      client
+        .from('withdrawals')
+        .select('amount, status')
+        .eq('shop_id', shopId),
+      client
+        .from('shop_wallets')
+        .select('balance')
+        .eq('shop_id', shopId)
+        .maybeSingle(),
+    ]);
+
+    let transactionBalance = 0;
+    for (const tx of (txRows as any[]) || []) {
+      if (tx?.status !== 'completed') continue;
+      if (!['sale', 'refund', 'adjustment'].includes(String(tx?.type || ''))) continue;
+      transactionBalance += Number(tx.amount || 0);
+    }
+
+    let reservedWithdrawals = 0;
+    for (const withdrawal of (withdrawalRows as any[]) || []) {
+      const status = String(withdrawal?.status || '').toLowerCase();
+      if (!['pending', 'processing', 'completed'].includes(status)) continue;
+      reservedWithdrawals += Number(withdrawal?.amount || 0);
+    }
+
+    const expectedBalance = Math.max(0, transactionBalance - reservedWithdrawals);
+    const currentBalance = Number(walletRow?.balance || 0);
+
+    if (Math.abs(currentBalance - expectedBalance) > 0.009) {
+      await client
+        .from('shop_wallets')
+        .upsert({
+          shop_id: shopId,
+          balance: expectedBalance,
+          updated_at: new Date().toISOString(),
+        });
+      this.logger.warn(
+        `Reconciled shop wallet ${shopId}: ${currentBalance} -> ${expectedBalance}`,
+      );
+    }
+
+    return expectedBalance;
+  }
+
   async getShopWalletSummary(userId: string) {
     const client = this.supabase.getClient();
     const { data: shop } = await client
@@ -3245,13 +3290,17 @@ export class PaymentsService {
       await client.from('shop_wallets').insert({ shop_id: shop.id, balance: 0 });
     }
 
-    const [{ data: transactions }, { data: pendingOrders }] = await Promise.all([
+    const [{ data: transactions }, { data: allIncomeTx }, { data: pendingOrders }] = await Promise.all([
       client
         .from('shop_transactions')
         .select('*')
         .eq('shop_id', shop.id)
         .order('created_at', { ascending: false })
         .limit(50),
+      client
+        .from('shop_transactions')
+        .select('amount, type, status')
+        .eq('shop_id', shop.id),
       client
         .from('orders')
         .select('total_amount')
@@ -3261,7 +3310,9 @@ export class PaymentsService {
 
     const txList = (transactions as any[]) || [];
     let totalIncome = 0;
-    for (const tx of txList) {
+    for (const tx of (allIncomeTx as any[]) || []) {
+      if (tx?.status !== 'completed') continue;
+      if (tx?.type !== 'sale') continue;
       const amount = Number(tx.amount || 0);
       if (amount > 0) totalIncome += amount;
     }
@@ -3271,17 +3322,13 @@ export class PaymentsService {
       pendingAmount += Number(order.total_amount || 0);
     }
 
-    const { data: finalWallet } = await client
-      .from('shop_wallets')
-      .select('balance')
-      .eq('shop_id', shop.id)
-      .maybeSingle();
+    const reconciledBalance = await this.reconcileShopWalletBalance(client, shop.id);
 
     return {
       hasShop: true,
       shopId: shop.id,
       shopName: shop.shop_name,
-      balance: Number(finalWallet?.balance || 0),
+      balance: reconciledBalance,
       totalIncome,
       pendingAmount,
       transactions: txList,
