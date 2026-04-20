@@ -555,6 +555,97 @@ export class SupabaseService implements OnModuleInit {
     return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
 
+  /**
+   * Old Gems feed: oldest video posts first, with one trending video inserted
+   * after every five old videos. This keeps nostalgia content focused while
+   * still surfacing strong evergreen posts.
+   */
+  async getOldGemsReelsPosts(limit = 20, offset = 0, cursor?: string) {
+    const oldCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const videoFilter = [
+      'post_type.eq.video',
+      'video_url.not.is.null',
+      'video_path.not.is.null',
+      'stream_uid.not.is.null',
+    ].join(',');
+
+    let oldQuery = this.client
+      .from('posts')
+      .select(SupabaseService.FEED_POST_SELECT)
+      .eq('is_public', true)
+      .eq('is_draft', false)
+      .or(videoFilter)
+      .lte('created_at', oldCutoff)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true });
+
+    if (cursor) {
+      oldQuery = oldQuery.gt('created_at', cursor).limit(limit);
+    } else {
+      oldQuery = oldQuery.range(offset, offset + limit - 1);
+    }
+
+    const { data: oldPosts, error: oldError } = await oldQuery;
+    if (oldError) throw oldError;
+
+    // If the app does not yet have 30-day-old videos, fall back to the oldest
+    // available videos so the page is still useful during launch.
+    let oldPool = oldPosts || [];
+    if (oldPool.length === 0 && !cursor) {
+      const { data: fallbackOld, error: fallbackError } = await this.client
+        .from('posts')
+        .select(SupabaseService.FEED_POST_SELECT)
+        .eq('is_public', true)
+        .eq('is_draft', false)
+        .or(videoFilter)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(offset, offset + limit - 1);
+      if (fallbackError) throw fallbackError;
+      oldPool = fallbackOld || [];
+    }
+
+    const trendingSlots = Math.max(1, Math.ceil(limit / 6));
+    const { data: trendingPool, error: trendingError } = await this.client
+      .from('posts')
+      .select(SupabaseService.FEED_POST_SELECT)
+      .eq('is_public', true)
+      .eq('is_draft', false)
+      .or(videoFilter)
+      .order('likes_count', { ascending: false, nullsFirst: false })
+      .order('views_count', { ascending: false, nullsFirst: false })
+      .order('shares_count', { ascending: false, nullsFirst: false })
+      .limit(trendingSlots + 4);
+    if (trendingError) throw trendingError;
+
+    const oldIds = new Set(oldPool.map((post: any) => post.id));
+    const trendingQueue = (trendingPool || [])
+      .filter((post: any) => !oldIds.has(post.id));
+    const mixed: any[] = [];
+
+    for (let i = 0; i < oldPool.length && mixed.length < limit; i++) {
+      mixed.push({ ...oldPool[i], _feed_source: 'old_gem' });
+      if ((i + 1) % 5 === 0 && trendingQueue.length > 0 && mixed.length < limit) {
+        mixed.push({ ...trendingQueue.shift(), _feed_source: 'trending_gem' });
+      }
+    }
+
+    const normalizedData = mixed.map((post: any) => this.normalizePostMedia(post));
+    const userIds = [...new Set(mixed.map((p: any) => p.user_id).filter(Boolean))];
+    if (userIds.length === 0) return normalizedData;
+
+    const { data: users } = await this.client
+      .from('users')
+      .select('id, username, full_name, profile_image_url, is_verified')
+      .in('id', userIds);
+    const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+
+    return normalizedData.map((post: any) => ({
+      ...post,
+      user: userMap.get(post.user_id) || null,
+    }));
+  }
+
   // ===== Like/Save Status =====
 
   async getPostInteractionStatus(postId: string, userId: string) {

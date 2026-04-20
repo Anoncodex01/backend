@@ -206,14 +206,18 @@ export class FeedService {
     cursor?: string;
     fresh?: boolean;
     createdAfter?: string;
+    mode?: 'reels' | 'old_gems';
   }) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
     const cursor = options.cursor;
     const fresh = options.fresh === true;
     const createdAfter = options.createdAfter;
+    const mode = options.mode || 'reels';
     const isFirstPage = !cursor && offset === 0 && !createdAfter;
-    const cacheKey = `feed:reels:page1:${limit}`;
+    const cacheKey = mode === 'old_gems'
+      ? `feed:reels:old_gems:page1:${limit}`
+      : `feed:reels:page1:${limit}`;
 
     let posts: any[] | null = null;
     if (isFirstPage && !fresh) {
@@ -225,7 +229,9 @@ export class FeedService {
     }
 
     if (!posts) {
-      posts = await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter);
+      posts = mode === 'old_gems'
+        ? await this.supabaseService.getOldGemsReelsPosts(limit, offset, cursor)
+        : await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter);
       if (isFirstPage && !fresh) {
         try {
           await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
@@ -277,6 +283,58 @@ export class FeedService {
   }
 
   /**
+   * Get active stories (not expired) with user info – globally cached in Redis.
+   * TTL: 45 s — short enough that new stories appear quickly.
+   */
+  async getActiveStories() {
+    const cacheKey = 'feed:stories:active';
+
+    let stories: any[] | null = null;
+    try {
+      stories = await this.redisService.getJson<any[]>(cacheKey);
+    } catch (error) {
+      console.warn('Redis stories cache read failed, falling back to database:', error);
+    }
+
+    if (!stories) {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await this.supabaseService
+        .getClient()
+        .from('stories')
+        .select('id,user_id,media_type,media_url,thumbnail_url,stream_uid,created_at,expires_at,users(id,username,full_name,profile_image_url,is_verified)')
+        .gte('expires_at', nowIso)
+        .order('created_at', { ascending: false })
+        .limit(60);
+
+      if (error) {
+        console.error('Error fetching stories from Supabase:', error);
+        return [];
+      }
+
+      stories = (data as any[]) || [];
+
+      try {
+        await this.redisService.setJson(cacheKey, stories, 45);
+      } catch (cacheError) {
+        console.warn('Redis stories cache write failed, continuing without cache:', cacheError);
+      }
+    }
+
+    return stories;
+  }
+
+  /**
+   * Invalidate stories cache (call after a new story is created or deleted)
+   */
+  async invalidateStoriesCache() {
+    try {
+      await this.redisService.del('feed:stories:active');
+    } catch (error) {
+      console.warn('Redis stories cache invalidation failed:', error);
+    }
+  }
+
+  /**
    * Enrich posts with user's like/save status
    */
   private async enrichPostsWithUserStatus(posts: any[], userId: string) {
@@ -307,6 +365,7 @@ export class FeedService {
       await this.redisService.deletePattern('feed:foryou:*');
       await this.redisService.del('feed:trending:page1');
       await this.redisService.deletePattern('feed:reels:page1:*');
+      await this.redisService.deletePattern('feed:reels:old_gems:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }

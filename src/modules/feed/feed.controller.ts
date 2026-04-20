@@ -146,6 +146,7 @@ export class FeedController {
     @Query('cursor') cursor?: string,
     @Query('createdAfter') createdAfter?: string,
     @Query('fresh') fresh?: string,
+    @Query('mode') mode?: string,
     @Headers('authorization') authHeader?: string,
   ) {
     let userId: string | undefined;
@@ -169,6 +170,7 @@ export class FeedController {
     const safeCreatedAfter = createdAfter && !Number.isNaN(Date.parse(createdAfter))
       ? new Date(createdAfter).toISOString()
       : undefined;
+    const safeMode = mode === 'old_gems' ? 'old_gems' : 'reels';
     const posts = await this.feedService.getReelsFeed({
       userId,
       limit: safeLimit,
@@ -176,9 +178,13 @@ export class FeedController {
       cursor,
       fresh: forceFresh,
       createdAfter: safeCreatedAfter,
+      mode: safeMode,
     });
-    const nextCursor = posts.length >= safeLimit && posts.length > 0
-      ? (posts[posts.length - 1] as any).created_at
+    const cursorPost = safeMode === 'old_gems'
+      ? [...posts].reverse().find((post: any) => post?._feed_source !== 'trending_gem')
+      : posts[posts.length - 1];
+    const nextCursor = posts.length >= safeLimit && cursorPost
+      ? (cursorPost as any).created_at
       : undefined;
 
     return {
@@ -190,8 +196,35 @@ export class FeedController {
         count: posts.length,
         hasMore: posts.length === safeLimit,
         nextCursor,
+        mode: safeMode,
       },
     };
+  }
+
+  /**
+   * GET /v1/feed/stories
+   * Active stories (< 24 h), globally Redis-cached for 45 s.
+   * Auth is optional — returns the same story list for all users.
+   */
+  @Get('stories')
+  async getStories() {
+    const stories = await this.feedService.getActiveStories();
+    return {
+      success: true,
+      data: stories,
+      meta: { count: stories.length },
+    };
+  }
+
+  /**
+   * POST /v1/feed/stories/invalidate
+   * Bust the Redis stories cache after a story is created or deleted.
+   * No auth required — the actual data mutation is guarded by Supabase RLS.
+   */
+  @Post('stories/invalidate')
+  async invalidateStoriesCache() {
+    await this.feedService.invalidateStoriesCache();
+    return { success: true };
   }
 
   /**
