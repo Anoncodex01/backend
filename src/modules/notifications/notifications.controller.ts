@@ -35,6 +35,17 @@ export class SendNotificationDto {
   imageUrl?: string;
 }
 
+export class LiveStartNotificationDto {
+  @IsString()
+  liveId: string;
+  @IsOptional()
+  @IsString()
+  channelName?: string;
+  @IsOptional()
+  @IsString()
+  title?: string;
+}
+
 @Controller('notifications')
 export class NotificationsController {
   constructor(private notificationsService: NotificationsService) {}
@@ -112,5 +123,27 @@ export class NotificationsController {
 
     return { success: true };
   }
-}
 
+  /**
+   * POST /v1/notifications/live-start
+   * Notify followers when the authenticated user starts a live session.
+   */
+  @Post('live-start')
+  @UseGuards(AuthGuard)
+  async sendLiveStartNotification(
+    @CurrentUser() userId: string,
+    @Body() dto: LiveStartNotificationDto,
+  ) {
+    const result = await this.notificationsService.sendLiveStartNotification({
+      hostId: userId,
+      liveId: dto.liveId,
+      channelName: dto.channelName,
+      title: dto.title,
+    });
+
+    return {
+      success: true,
+      data: result,
+    };
+  }
+}

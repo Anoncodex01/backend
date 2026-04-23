@@ -209,6 +209,148 @@ export class NotificationsService {
   }
 
   /**
+   * Fan out a live-start notification to the host's followers.
+   * This is used by the Firestore-based live flow in the mobile app, so users
+   * still get FCM pushes even when the backend did not create the live session.
+   */
+  async sendLiveStartNotification(data: {
+    hostId: string;
+    liveId: string;
+    channelName?: string;
+    title?: string;
+  }) {
+    if (!data.hostId || !data.liveId) {
+      return { sent: false, reason: 'missing_host_or_live_id' };
+    }
+
+    const debounceKey = `notif_debounce:live_start:${data.liveId}`;
+    const wasRecentlySent = await this.redisService.exists(debounceKey);
+    if (wasRecentlySent) {
+      return { sent: false, reason: 'duplicate_live_start' };
+    }
+    await this.redisService.set(debounceKey, '1', 30 * 60);
+
+    const client = this.supabaseService.getClient();
+    const host = await this.supabaseService.getUser(data.hostId).catch(() => null);
+    const hostName =
+      host?.full_name || host?.username || data.title || 'Someone you follow';
+    const hostAvatar = host?.profile_image_url || undefined;
+    const hostIsVerified = host?.is_verified === true;
+    const body = data.title?.trim()
+      ? `${data.title.trim()}`
+      : 'Tap to watch now';
+
+    const followerIds: string[] = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const { data: rows, error } = await client
+        .from('follows')
+        .select('follower_id')
+        .eq('following_id', data.hostId)
+        .range(from, to);
+
+      if (error) {
+        console.error('Error loading live notification followers:', error);
+        break;
+      }
+
+      const ids = (rows || [])
+        .map((row: any) => row.follower_id)
+        .filter((id: any) => typeof id === 'string' && id !== data.hostId);
+      followerIds.push(...ids);
+
+      if (!rows || rows.length < pageSize) break;
+    }
+
+    const uniqueFollowerIds = [...new Set(followerIds)];
+    if (uniqueFollowerIds.length === 0) {
+      return { sent: false, reason: 'no_followers' };
+    }
+
+    const notificationRows = uniqueFollowerIds.map((userId) => ({
+      user_id: userId,
+      type: 'live',
+      title: `${hostName} is LIVE`,
+      body,
+      actor_id: data.hostId,
+      actor_username: hostName,
+      actor_avatar: hostAvatar,
+      live_id: data.liveId,
+      data: {
+        type: 'live',
+        liveId: data.liveId,
+        live_id: data.liveId,
+        hostId: data.hostId,
+        host_id: data.hostId,
+        channelName: data.channelName || '',
+        channel_name: data.channelName || '',
+        actor_is_verified: hostIsVerified,
+      },
+      is_read: false,
+    }));
+
+    for (let i = 0; i < notificationRows.length; i += 500) {
+      const batch = notificationRows.slice(i, i + 500);
+      const { error } = await client.from('notifications').insert(batch);
+      if (error) {
+        console.error('Error storing live notifications:', error);
+      }
+    }
+
+    const allTokens: string[] = [];
+    for (let i = 0; i < uniqueFollowerIds.length; i += 100) {
+      const batchIds = uniqueFollowerIds.slice(i, i + 100);
+      const tokenBatches = await Promise.all(
+        batchIds.map((userId) => this.authService.getFcmTokens(userId)),
+      );
+      for (const tokens of tokenBatches) {
+        allTokens.push(...tokens);
+      }
+    }
+
+    const uniqueTokens = [...new Set(allTokens)].filter(Boolean);
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < uniqueTokens.length; i += 500) {
+      const tokens = uniqueTokens.slice(i, i + 500);
+      try {
+        const response = await this.firebaseService.sendMulticastNotification({
+          tokens,
+          title: `${hostName} is LIVE`,
+          body,
+          imageUrl: hostAvatar,
+          data: {
+            type: 'live',
+            liveId: data.liveId,
+            live_id: data.liveId,
+            hostId: data.hostId,
+            host_id: data.hostId,
+            channelName: data.channelName || '',
+            channel_name: data.channelName || '',
+            userId: data.hostId,
+            user_id: data.hostId,
+          },
+        });
+        successCount += response.successCount;
+        failureCount += response.failureCount;
+      } catch (error) {
+        failureCount += tokens.length;
+        console.error('Error sending live FCM batch:', error);
+      }
+    }
+
+    return {
+      sent: uniqueTokens.length > 0,
+      followers: uniqueFollowerIds.length,
+      tokens: uniqueTokens.length,
+      successCount,
+      failureCount,
+    };
+  }
+
+  /**
    * Send notification for message
    */
   async sendMessageNotification(data: {
@@ -268,4 +410,3 @@ export class NotificationsService {
     }
   }
 }
-

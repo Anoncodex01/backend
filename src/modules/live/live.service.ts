@@ -1,16 +1,74 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import * as admin from 'firebase-admin';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
+import { FirebaseService } from '../../core/firebase/firebase.service';
 import { AgoraService } from './agora.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class LiveService {
+  private readonly logger = new Logger(LiveService.name);
+  private readonly staleHostTimeoutMs = 90_000;
+
   constructor(
     private redisService: RedisService,
     private supabaseService: SupabaseService,
+    private firebaseService: FirebaseService,
     private agoraService: AgoraService,
+    private notificationsService: NotificationsService,
   ) {}
+
+  @Cron('*/30 * * * * *')
+  async cleanupStaleFirestoreLiveSessions() {
+    try {
+      const firestore = this.firebaseService.getFirestore();
+      const snapshot = await firestore
+        .collection('live_sessions')
+        .where('isLive', '==', true)
+        .where('endedAt', '==', null)
+        .limit(100)
+        .get();
+
+      if (snapshot.empty) return;
+
+      const now = Date.now();
+      const batch = firestore.batch();
+      let cleaned = 0;
+
+      for (const doc of snapshot.docs) {
+        const data = doc.data();
+        const hostLastSeenAt = data.hostLastSeenAt?.toDate?.();
+        const startedAt = data.startedAt?.toDate?.();
+        const referenceTime = hostLastSeenAt ?? startedAt;
+
+        if (!referenceTime) continue;
+        if (now - referenceTime.getTime() <= this.staleHostTimeoutMs) continue;
+
+        batch.set(
+          doc.ref,
+          {
+            isLive: false,
+            hostOnline: false,
+            endedAt: admin.firestore.FieldValue.serverTimestamp(),
+            endedReason: 'host_timeout',
+            viewerCount: 0,
+          },
+          { merge: true },
+        );
+        cleaned++;
+      }
+
+      if (cleaned === 0) return;
+
+      await batch.commit();
+      this.logger.warn(`Cleaned up ${cleaned} stale Firestore live session(s)`);
+    } catch (error) {
+      this.logger.warn(`Stale Firestore live cleanup skipped: ${error}`);
+    }
+  }
 
   /**
    * Start a new live session
@@ -39,6 +97,15 @@ export class LiveService {
     // Initialize Redis counters
     await this.redisService.set(`live:${session.id}:viewers`, '0');
     await this.redisService.set(`live:${session.id}:hearts`, '0');
+
+    this.notificationsService
+      .sendLiveStartNotification({
+        hostId: data.hostId,
+        liveId: session.id,
+        channelName,
+        title: data.title,
+      })
+      .catch((error) => console.error('Error sending live start notification:', error));
 
     return {
       session,
@@ -216,4 +283,3 @@ export class LiveService {
     });
   }
 }
-
