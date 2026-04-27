@@ -37,6 +37,8 @@ async function bootstrap() {
       'X-Webhook-Event',
       'X-Webhook-Timestamp',
       'X-Webhook-Signature',
+      'X-Admin-Secret',
+      'X-Support-Secret',
     ],
     credentials: true,
   });
@@ -72,4 +74,3 @@ async function bootstrap() {
 }
 
 bootstrap();
-

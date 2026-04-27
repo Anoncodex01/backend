@@ -21,6 +21,7 @@ import { CommunitiesModule } from './modules/communities/communities.module';
 import { CommentsModule } from './modules/comments/comments.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { SupportModule } from './modules/support/support.module';
 
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
@@ -61,9 +62,9 @@ import { LegalController } from './legal.controller';
     CommentsModule,
     PaymentsModule,
     AdminModule,
+    SupportModule,
   ],
   controllers: [HealthController, LegalController],
   providers: [RealtimeGateway],
 })
 export class AppModule {}
-

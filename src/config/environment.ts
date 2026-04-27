@@ -83,6 +83,13 @@ export const environment = {
     fromName: process.env.SMTP_FROM_NAME || 'WhapVibez',
   },
 
+  // Support / Helpdesk
+  support: {
+    adminSecret: process.env.SUPPORT_ADMIN_SECRET || '',
+    inboundSecret: process.env.SUPPORT_INBOUND_SECRET || '',
+    portalUrl: process.env.SUPPORT_PORTAL_URL || '',
+  },
+
   // Payments (Snippe)
   snippe: {
     apiUrl: process.env.SNIPPE_API_URL || 'https://api.snippe.sh/api/v1',
@@ -96,4 +103,3 @@ export const environment = {
 };
 
 export type Environment = typeof environment;
-

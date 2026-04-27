@@ -88,6 +88,12 @@ export class PaymentsService {
     { id: 'castle', name: 'Castle', icon: '🏰', coinCost: 900, accentHex: '#B39DDB' },
     { id: 'supercar', name: 'Supercar', icon: '🏎️', coinCost: 1200, accentHex: '#E53935' },
     { id: 'yacht', name: 'Yacht', icon: '🛥️', coinCost: 1800, accentHex: '#26C6DA' },
+    { id: 'train', name: 'Train', icon: '🚆', coinCost: 2200, accentHex: '#5C6BC0' },
+    { id: 'airplane', name: 'Airplane', icon: '✈️', coinCost: 2600, accentHex: '#42A5F5' },
+    { id: 'monkey', name: 'Monkey', icon: '🐵', coinCost: 3200, accentHex: '#8D6E63' },
+    { id: 'elephant', name: 'Elephant', icon: '🐘', coinCost: 4200, accentHex: '#607D8B' },
+    { id: 'lion', name: 'Lion', icon: '🦁', coinCost: 5600, accentHex: '#FFB300' },
+    { id: 'dragon', name: 'Dragon', icon: '🐉', coinCost: 7200, accentHex: '#7E57C2' },
   ];
 
   constructor(
