@@ -147,7 +147,28 @@ export class FirebaseService implements OnModuleInit {
         priority: 'high',
         notification: {
           channelId: 'whapvibez_notifications',
+          priority: 'high',
+          defaultSound: true,
+          defaultVibrateTimings: true,
         },
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title: data.title,
+              body: data.body,
+            },
+            sound: 'default',
+            badge: 1,
+          },
+        },
+        headers: {
+          'apns-priority': '10',
+        },
+        fcmOptions: data.imageUrl != null && data.imageUrl!.length > 0
+            ? { imageUrl: data.imageUrl }
+            : undefined,
       },
     };
 
@@ -162,14 +183,43 @@ export class FirebaseService implements OnModuleInit {
     title: string;
     body: string;
     data?: Record<string, string>;
+    imageUrl?: string;
   }): Promise<string> {
     const message: admin.messaging.Message = {
       topic: data.topic,
       notification: {
         title: data.title,
         body: data.body,
+        imageUrl: data.imageUrl,
       },
       data: data.data,
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'whapvibez_notifications',
+          priority: 'high',
+          defaultSound: true,
+          defaultVibrateTimings: true,
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title: data.title,
+              body: data.body,
+            },
+            sound: 'default',
+            badge: 1,
+          },
+        },
+        headers: {
+          'apns-priority': '10',
+        },
+        fcmOptions: data.imageUrl != null && data.imageUrl!.length > 0
+            ? { imageUrl: data.imageUrl }
+            : undefined,
+      },
     };
 
     return admin.messaging().send(message);
@@ -203,4 +253,3 @@ export class FirebaseService implements OnModuleInit {
     return admin.database();
   }
 }
-

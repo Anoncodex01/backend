@@ -236,9 +236,10 @@ export class NotificationsService {
       host?.full_name || host?.username || data.title || 'Someone you follow';
     const hostAvatar = host?.profile_image_url || undefined;
     const hostIsVerified = host?.is_verified === true;
-    const body = data.title?.trim()
-      ? `${data.title.trim()}`
-      : 'Tap to watch now';
+    const title = `${hostName} invited you to a live`;
+    const body = (data.title?.trim().length || 0) > 0
+      ? data.title!.trim()
+      : 'Join now and watch live';
 
     const followerIds: string[] = [];
     const pageSize = 1000;
@@ -271,7 +272,7 @@ export class NotificationsService {
     const notificationRows = uniqueFollowerIds.map((userId) => ({
       user_id: userId,
       type: 'live',
-      title: `${hostName} is LIVE`,
+      title,
       body,
       actor_id: data.hostId,
       actor_username: hostName,
@@ -318,7 +319,7 @@ export class NotificationsService {
       try {
         const response = await this.firebaseService.sendMulticastNotification({
           tokens,
-          title: `${hostName} is LIVE`,
+          title,
           body,
           imageUrl: hostAvatar,
           data: {
