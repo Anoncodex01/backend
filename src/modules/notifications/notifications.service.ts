@@ -342,13 +342,21 @@ export class NotificationsService {
       }
     }
 
-    return {
+    const result = {
       sent: uniqueTokens.length > 0,
       followers: uniqueFollowerIds.length,
       tokens: uniqueTokens.length,
       successCount,
       failureCount,
     };
+
+    console.log('📡 Live start notification result:', {
+      hostId: data.hostId,
+      liveId: data.liveId,
+      ...result,
+    });
+
+    return result;
   }
 
   /**

@@ -53,7 +53,10 @@ export class SupportService {
   }
 
   private get supportAdminSecret() {
-    return this.configService.get<string>('SUPPORT_ADMIN_SECRET', '');
+    return (
+      this.configService.get<string>('SUPPORT_ADMIN_SECRET', '') ||
+      this.configService.get<string>('ADMIN_SECRET', '')
+    );
   }
 
   private get supportInboundSecret() {
