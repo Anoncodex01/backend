@@ -1,10 +1,27 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 
 @Injectable()
 export class CommentsService {
+  private static readonly BLOCKED_KEYWORDS = [
+    'fuck you',
+    'bitch',
+    'slut',
+    'whore',
+    'nigger',
+    'kill yourself',
+    'rape you',
+    'nitakuua',
+    'nakubaka',
+    'malaya',
+    'umbwa',
+    'ngono',
+    'porn',
+    'nude',
+  ];
+
   private commentsTtl: number;
 
   constructor(
@@ -14,6 +31,26 @@ export class CommentsService {
   ) {
     // Cache comments for 5 minutes (they update frequently)
     this.commentsTtl = this.configService.get('CACHE_COMMENTS_TTL', 300);
+  }
+
+  private normalizeText(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private validateCommentText(content: string) {
+    const normalized = this.normalizeText(content);
+    if (!normalized) return;
+    const matches = CommentsService.BLOCKED_KEYWORDS.filter((keyword) =>
+      normalized.includes(keyword),
+    );
+    if (matches.length === 0) return;
+    throw new BadRequestException(
+      'This comment appears to violate community guidelines. Please edit it and try again.',
+    );
   }
 
   /**
@@ -174,6 +211,7 @@ export class CommentsService {
    * Add a comment (invalidates cache)
    */
   async addComment(postId: string, userId: string, content: string) {
+    this.validateCommentText(content);
     const comment = await this.supabaseService.addComment(postId, userId, content);
     
     // Invalidate cache
@@ -203,4 +241,3 @@ export class CommentsService {
     }
   }
 }
-

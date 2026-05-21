@@ -12,6 +12,48 @@ import { v4 as uuidv4 } from 'uuid';
 export class LiveService {
   private readonly logger = new Logger(LiveService.name);
   private readonly staleHostTimeoutMs = 90_000;
+  private readonly blockedLiveTitleKeywords = [
+    'child porn',
+    'child sex',
+    'underage sex',
+    'rape',
+    'incest',
+    'bestiality',
+    'sex tape',
+    'kill yourself',
+    'suicide challenge',
+    'beheading',
+    'terror attack',
+    'terrorist attack',
+    'nude',
+    'naked',
+    'porn',
+    'xxx',
+    'nsfw',
+    'escort',
+    'hookup',
+    'drug dealer',
+    'cocaine',
+    'meth',
+    'weed',
+    'marijuana',
+    'gun',
+    'fight club',
+    'bloodshed',
+    'betting slip',
+    'casino hack',
+    'fuck you',
+    'bitch',
+    'slut',
+    'whore',
+    'nigger',
+    'rape you',
+    'nitakuua',
+    'nakubaka',
+    'malaya',
+    'umbwa',
+    'ngono',
+  ];
 
   constructor(
     private redisService: RedisService,
@@ -20,6 +62,29 @@ export class LiveService {
     private agoraService: AgoraService,
     private notificationsService: NotificationsService,
   ) {}
+
+  private normalizeText(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private validateLiveTitle(title?: string) {
+    const normalized = this.normalizeText(title || '');
+    if (!normalized) return;
+
+    const matched = this.blockedLiveTitleKeywords.filter((keyword) =>
+      normalized.includes(keyword),
+    );
+
+    if (matched.length > 0) {
+      throw new Error(
+        'This live title appears to violate community guidelines. Please edit it and try again.',
+      );
+    }
+  }
 
   @Cron('*/30 * * * * *')
   async cleanupStaleFirestoreLiveSessions() {
@@ -77,6 +142,7 @@ export class LiveService {
     hostId: string;
     title?: string;
   }) {
+    this.validateLiveTitle(data.title);
     const channelName = `live_${uuidv4().substring(0, 8)}`;
 
     // Generate Agora tokens

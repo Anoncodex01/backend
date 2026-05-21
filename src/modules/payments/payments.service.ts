@@ -2073,6 +2073,53 @@ export class PaymentsService {
         },
       ]);
 
+      let gifterProfile: Record<string, unknown> | null = null;
+      try {
+        const { data: analyticsData, error: analyticsError } = await client.rpc('record_gift_analytics', {
+          p_sender_id: senderId,
+          p_receiver_id: dto.receiverId,
+          p_live_id: dto.liveId || null,
+          p_gift_id: resolvedGift.id,
+          p_gift_name: resolvedGift.name,
+          p_gift_icon: resolvedGift.icon,
+          p_coin_cost: resolvedGift.coinCost,
+        });
+
+        if (analyticsError) {
+          this.logger.warn(`Gift analytics write failed: ${analyticsError.message}`);
+          await this.logAdminEvent({
+            level: 'warn',
+            category: 'gift',
+            message: 'Gift analytics write failed',
+            metadata: {
+              senderId,
+              receiverId: dto.receiverId,
+              giftId: resolvedGift.id,
+              liveId: dto.liveId,
+              coinCost: resolvedGift.coinCost,
+              error: analyticsError.message,
+            },
+          });
+        } else if (analyticsData && typeof analyticsData === 'object') {
+          gifterProfile = analyticsData as Record<string, unknown>;
+        }
+      } catch (analyticsError: any) {
+        this.logger.warn(`Gift analytics sync failed: ${analyticsError?.message || analyticsError}`);
+        await this.logAdminEvent({
+          level: 'warn',
+          category: 'gift',
+          message: 'Gift analytics sync failed',
+          metadata: {
+            senderId,
+            receiverId: dto.receiverId,
+            giftId: resolvedGift.id,
+            liveId: dto.liveId,
+            coinCost: resolvedGift.coinCost,
+            error: analyticsError?.message || `${analyticsError}`,
+          },
+        });
+      }
+
       await this.logAdminEvent({
         category: 'gift',
         message: `Gift sent ${resolvedGift.name}`.trim(),
@@ -2090,6 +2137,7 @@ export class PaymentsService {
         senderBalance,
         receiverBalance,
         gift: resolvedGift,
+        gifterProfile,
       };
     } catch (e: any) {
       await this.logAdminEvent({
