@@ -86,6 +86,22 @@ export class LiveService {
     }
   }
 
+  private buildAgoraUid(userId: string) {
+    const normalized = (userId || '').replace(/[^a-fA-F0-9]/g, '');
+    if (normalized.length >= 8) {
+      const parsed = parseInt(normalized.slice(-8), 16);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed % 2147483646 || 1;
+      }
+    }
+
+    let hash = 0;
+    for (let i = 0; i < userId.length; i += 1) {
+      hash = ((hash << 5) - hash + userId.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash) % 2147483646 || 1;
+  }
+
   @Cron('*/30 * * * * *')
   async cleanupStaleFirestoreLiveSessions() {
     try {
@@ -144,11 +160,12 @@ export class LiveService {
   }) {
     this.validateLiveTitle(data.title);
     const channelName = `live_${uuidv4().substring(0, 8)}`;
+    const hostAgoraUid = this.buildAgoraUid(data.hostId);
 
     // Generate Agora tokens
     const hostToken = this.agoraService.generateRtcToken(
       channelName,
-      data.hostId,
+      hostAgoraUid,
       'publisher',
       86400, // 24 hours
     );
@@ -177,6 +194,7 @@ export class LiveService {
       session,
       channelName,
       token: hostToken,
+      uid: hostAgoraUid,
       appId: this.agoraService.getAppId(),
     };
   }
@@ -197,10 +215,12 @@ export class LiveService {
       // For now, we'll just use what we have
     }
 
+    const viewerAgoraUid = this.buildAgoraUid(data.userId);
+
     // Generate viewer token
     const token = this.agoraService.generateRtcToken(
       session?.channel_name || '',
-      data.userId,
+      viewerAgoraUid,
       'subscriber',
       7200, // 2 hours
     );
@@ -214,6 +234,7 @@ export class LiveService {
 
     return {
       token,
+      uid: viewerAgoraUid,
       appId: this.agoraService.getAppId(),
       channelName: session?.channel_name,
       viewerCount,
@@ -315,19 +336,22 @@ export class LiveService {
     try {
       const role = data.isHost ? 'publisher' : 'subscriber';
       const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
+      const agoraUid = this.buildAgoraUid(data.userId);
 
-      // Use uid 0 to match Flutter app (which uses uid: 0 to let Agora assign UID automatically)
       const token = this.agoraService.generateRtcToken(
         data.channelName,
-        0, // Use 0 to match Flutter app's joinChannel call
+        agoraUid,
         role,
         expirationSeconds,
       );
 
-      console.log(`✅ Token generated successfully for channel: ${data.channelName}, isHost: ${data.isHost}, token length: ${token.length}`);
+      console.log(
+        `✅ Token generated successfully for channel: ${data.channelName}, isHost: ${data.isHost}, uid: ${agoraUid}, token length: ${token.length}`,
+      );
 
       return {
         token,
+        uid: agoraUid,
         appId: this.agoraService.getAppId(),
         channelName: data.channelName,
       };
