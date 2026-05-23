@@ -51,19 +51,24 @@ export class AgoraService {
       // Map role to RtcRole enum
       const rtcRole = role === 'publisher' ? RtcRole.PUBLISHER : RtcRole.SUBSCRIBER;
 
+      // Agora expects absolute Unix timestamps for expiry, not raw durations.
+      const privilegeExpireTs =
+        Math.floor(Date.now() / 1000) + expirationSeconds;
+
       // Generate token using official Agora library
-      // Parameters are durations in seconds (not absolute timestamps)
       const token = RtcTokenBuilder.buildTokenWithUid(
         this.appId,
         this.appCertificate,
         channelName,
         numericUid,
         rtcRole,
-        expirationSeconds, // tokenExpire: duration in seconds
-        expirationSeconds, // privilegeExpire: duration in seconds
+        privilegeExpireTs,
+        privilegeExpireTs,
       );
 
-      console.log(`✅ Generated token using official Agora library - channel: ${channelName}, uid: ${numericUid}, role: ${role}, expires: ${expirationSeconds}s, tokenLength: ${token.length}`);
+      console.log(
+        `✅ Generated token using official Agora library - channel: ${channelName}, uid: ${numericUid}, role: ${role}, expiresAt: ${privilegeExpireTs}, tokenLength: ${token.length}`,
+      );
       
       return token;
     } catch (error) {
