@@ -1,106 +1,146 @@
-import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards, Logger } from '@nestjs/common';
-import { SubmitKycDto } from './dto/submit-kyc.dto';
-import { PaymentsService } from './payments.service';
-import { AuthGuard } from '../auth/guards/auth.guard';
-import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { CreateMobilePaymentDto } from './dto/create-mobile-payment.dto';
-import { CreateCardPaymentDto } from './dto/create-card-payment.dto';
-import { CreateWithdrawalDto } from './dto/create-withdrawal.dto';
-import { CreateGiftTransferDto } from './dto/create-gift-transfer.dto';
-import { CreateShopWithdrawalDto } from './dto/create-shop-withdrawal.dto';
-import { CreateVerificationSubscriptionDto } from './dto/create-verification-subscription.dto';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+  Logger,
+} from "@nestjs/common";
+import { SubmitKycDto } from "./dto/submit-kyc.dto";
+import { PaymentsService } from "./payments.service";
+import { AuthGuard } from "../auth/guards/auth.guard";
+import { CurrentUser } from "../auth/decorators/current-user.decorator";
+import { CreateMobilePaymentDto } from "./dto/create-mobile-payment.dto";
+import { CreateCardPaymentDto } from "./dto/create-card-payment.dto";
+import { CreateWithdrawalDto } from "./dto/create-withdrawal.dto";
+import { CreateGiftTransferDto } from "./dto/create-gift-transfer.dto";
+import { CreateShopWithdrawalDto } from "./dto/create-shop-withdrawal.dto";
+import { CreateVerificationSubscriptionDto } from "./dto/create-verification-subscription.dto";
 
-@Controller('payments')
+@Controller("payments")
 export class PaymentsController {
   private readonly logger = new Logger(PaymentsController.name);
 
   constructor(private paymentsService: PaymentsService) {}
 
   @UseGuards(AuthGuard)
-  @Post('mobile')
-  async createMobile(@CurrentUser() userId: string, @Body() dto: CreateMobilePaymentDto) {
+  @Post("mobile")
+  async createMobile(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateMobilePaymentDto,
+  ) {
     return this.paymentsService.createMobilePayment(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Post('card')
-  async createCard(@CurrentUser() userId: string, @Body() dto: CreateCardPaymentDto) {
+  @Post("card")
+  async createCard(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateCardPaymentDto,
+  ) {
     return this.paymentsService.createCardPayment(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Get('wallet')
+  @Post("apple-iap/complete")
+  async completeAppleIap(@CurrentUser() userId: string, @Body() dto: any) {
+    return this.paymentsService.completeAppleIap(userId, dto);
+  }
+
+  @UseGuards(AuthGuard)
+  @Get("wallet")
   async getWallet(@CurrentUser() userId: string) {
     return this.paymentsService.getWalletSummary(userId);
   }
 
   @UseGuards(AuthGuard)
-  @Get('shop-wallet')
+  @Get("shop-wallet")
   async getShopWallet(@CurrentUser() userId: string) {
     return this.paymentsService.getShopWalletSummary(userId);
   }
 
-  @Get('gifts/catalog')
+  @Get("gifts/catalog")
   async getGiftCatalog() {
     return this.paymentsService.getGiftCatalog();
   }
 
   @UseGuards(AuthGuard)
-  @Get(':reference/status')
-  async getPaymentStatusFromDb(@CurrentUser() userId: string, @Param('reference') reference: string) {
+  @Get(":reference/status")
+  async getPaymentStatusFromDb(
+    @CurrentUser() userId: string,
+    @Param("reference") reference: string,
+  ) {
     return this.paymentsService.getPaymentStatusFromDb(reference, userId);
   }
 
   @UseGuards(AuthGuard)
-  @Post(':reference/check')
-  async checkPaymentStatus(@CurrentUser() userId: string, @Param('reference') reference: string) {
+  @Post(":reference/check")
+  async checkPaymentStatus(
+    @CurrentUser() userId: string,
+    @Param("reference") reference: string,
+  ) {
     return this.paymentsService.manualCheckPaymentStatus(reference);
   }
 
   @UseGuards(AuthGuard)
-  @Post('reconcile')
+  @Post("reconcile")
   async reconcilePayments(@CurrentUser() userId: string) {
     return this.paymentsService.reconcilePayments();
   }
 
   @UseGuards(AuthGuard)
-  @Post('withdraw')
-  async withdraw(@CurrentUser() userId: string, @Body() dto: CreateWithdrawalDto) {
+  @Post("withdraw")
+  async withdraw(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateWithdrawalDto,
+  ) {
     return this.paymentsService.createWithdrawal(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Post('shop-withdraw')
-  async shopWithdraw(@CurrentUser() userId: string, @Body() dto: CreateShopWithdrawalDto) {
+  @Post("shop-withdraw")
+  async shopWithdraw(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateShopWithdrawalDto,
+  ) {
     return this.paymentsService.createShopWithdrawal(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Get('withdrawals/:reference')
-  async getWithdrawalStatus(@CurrentUser() userId: string, @Param('reference') reference: string) {
+  @Get("withdrawals/:reference")
+  async getWithdrawalStatus(
+    @CurrentUser() userId: string,
+    @Param("reference") reference: string,
+  ) {
     return this.paymentsService.getWithdrawalStatus(reference, userId);
   }
 
   @UseGuards(AuthGuard)
-  @Post('gift')
-  async gift(@CurrentUser() userId: string, @Body() dto: CreateGiftTransferDto) {
+  @Post("gift")
+  async gift(
+    @CurrentUser() userId: string,
+    @Body() dto: CreateGiftTransferDto,
+  ) {
     return this.paymentsService.sendGift(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Get('verification/plans')
+  @Get("verification/plans")
   async getVerificationPlans() {
     return this.paymentsService.getVerificationPlans();
   }
 
   @UseGuards(AuthGuard)
-  @Get('verification/account/status')
+  @Get("verification/account/status")
   async getVerificationStatus(@CurrentUser() userId: string) {
     return this.paymentsService.getVerificationStatus(userId);
   }
 
   @UseGuards(AuthGuard)
-  @Post('verification/subscribe')
+  @Post("verification/subscribe")
   async subscribeVerification(
     @CurrentUser() userId: string,
     @Body() dto: CreateVerificationSubscriptionDto,
@@ -109,57 +149,66 @@ export class PaymentsController {
   }
 
   @UseGuards(AuthGuard)
-  @Post('verification/kyc')
+  @Post("verification/kyc")
   async submitKyc(@CurrentUser() userId: string, @Body() dto: SubmitKycDto) {
     return this.paymentsService.submitKyc(userId, dto);
   }
 
   @UseGuards(AuthGuard)
-  @Get('verification/kyc/status')
+  @Get("verification/kyc/status")
   async getKycStatus(@CurrentUser() userId: string) {
     return this.paymentsService.getKycStatus(userId);
   }
 
-  @Post('verification/kyc/:id/approve')
+  @Post("verification/kyc/:id/approve")
   async approveKyc(
-    @Param('id') id: string,
-    @Headers('x-admin-secret') adminSecret: string,
+    @Param("id") id: string,
+    @Headers("x-admin-secret") adminSecret: string,
   ) {
-    return this.paymentsService.approveKycSubmission(id, adminSecret || '');
+    return this.paymentsService.approveKycSubmission(id, adminSecret || "");
   }
 
-  @Post('verification/kyc/:id/reject')
+  @Post("verification/kyc/:id/reject")
   async rejectKyc(
-    @Param('id') id: string,
+    @Param("id") id: string,
     @Body() body: { reason?: string },
-    @Headers('x-admin-secret') adminSecret: string,
+    @Headers("x-admin-secret") adminSecret: string,
   ) {
-    return this.paymentsService.rejectKycSubmission(id, body?.reason || '', adminSecret || '');
+    return this.paymentsService.rejectKycSubmission(
+      id,
+      body?.reason || "",
+      adminSecret || "",
+    );
   }
 
   @UseGuards(AuthGuard)
-  @Post('verification/:reference/retry-mobile')
+  @Post("verification/:reference/retry-mobile")
   async retryVerificationMobile(
     @CurrentUser() userId: string,
-    @Param('reference') reference: string,
+    @Param("reference") reference: string,
   ) {
-    return this.paymentsService.retryVerificationMobilePayment(userId, reference);
+    return this.paymentsService.retryVerificationMobilePayment(
+      userId,
+      reference,
+    );
   }
 
-  @Post('webhook')
+  @Post("webhook")
   async webhook(@Req() req: any, @Headers() headers: Record<string, any>) {
     try {
       // Use rawBody if available, otherwise use parsed body
-      const rawBody = req.rawBody ?? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
-      this.logger.log('📥 Webhook endpoint called:', {
+      const rawBody =
+        req.rawBody ??
+        (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
+      this.logger.log("📥 Webhook endpoint called:", {
         method: req.method,
         url: req.url,
-        event: headers['x-webhook-event'] || headers['X-Webhook-Event'],
-        userAgent: headers['user-agent'] || headers['User-Agent'],
+        event: headers["x-webhook-event"] || headers["X-Webhook-Event"],
+        userAgent: headers["user-agent"] || headers["User-Agent"],
       });
       return await this.paymentsService.handleWebhook(rawBody, headers);
     } catch (error: any) {
-      this.logger.error('❌ Webhook controller error:', {
+      this.logger.error("❌ Webhook controller error:", {
         message: error.message,
         status: error.status,
         stack: error.stack,
@@ -169,8 +218,8 @@ export class PaymentsController {
   }
 
   // Keep this catch-all LAST so it does not shadow the named routes above
-  @Get(':reference')
-  async getStatus(@Param('reference') reference: string) {
+  @Get(":reference")
+  async getStatus(@Param("reference") reference: string) {
     return this.paymentsService.getPaymentStatus(reference);
   }
 }
