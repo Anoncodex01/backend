@@ -263,11 +263,66 @@ export class SupabaseService implements OnModuleInit {
     const { data, error } = await this.client
       .from('communities')
       .select('*')
+      .eq('is_public', true)
       .order('members_count', { ascending: false })
       .range(offset, offset + limit - 1);
 
     if (error) throw error;
     return data || [];
+  }
+
+  async getMyCommunities(userId: string) {
+    const { data: bannedRows, error: bannedError } = await this.client
+      .from('community_banned_members')
+      .select('community_id')
+      .eq('user_id', userId);
+
+    if (bannedError) throw bannedError;
+
+    const bannedIds = new Set((bannedRows || []).map((row: any) => row.community_id));
+
+    const { data: memberships, error: membershipError } = await this.client
+      .from('community_members')
+      .select('community_id, role, joined_at')
+      .eq('user_id', userId)
+      .order('joined_at', { ascending: false });
+
+    if (membershipError) throw membershipError;
+
+    const visibleMemberships = (memberships || []).filter(
+      (membership: any) => !bannedIds.has(membership.community_id),
+    );
+    const communityIds = visibleMemberships.map(
+      (membership: any) => membership.community_id,
+    );
+
+    if (communityIds.length === 0) {
+      return [];
+    }
+
+    const { data: communities, error: communitiesError } = await this.client
+      .from('communities')
+      .select('*')
+      .in('id', communityIds);
+
+    if (communitiesError) throw communitiesError;
+
+    const communityMap = new Map((communities || []).map((community: any) => [
+      community.id,
+      community,
+    ]));
+
+    return visibleMemberships
+      .map((membership: any) => {
+        const community = communityMap.get(membership.community_id);
+        if (!community) return null;
+        return {
+          ...community,
+          is_member: true,
+          user_role: membership.role,
+        };
+      })
+      .filter(Boolean);
   }
 
   async getCommunity(communityId: string) {

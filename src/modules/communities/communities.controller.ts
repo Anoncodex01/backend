@@ -4,6 +4,7 @@ import {
   Param,
   Query,
   Headers,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { CommunitiesService } from './communities.service';
 import { AuthService } from '../auth/auth.service';
@@ -56,6 +57,31 @@ export class CommunitiesController {
   }
 
   /**
+   * GET /v1/communities/me
+   * Get communities joined by the authenticated user.
+   */
+  @Get('me')
+  async getMyCommunities(
+    @Headers('authorization') authHeader?: string,
+  ) {
+    if (!authHeader?.startsWith('Bearer ')) {
+      throw new UnauthorizedException('Missing authorization token');
+    }
+
+    const token = authHeader.replace('Bearer ', '');
+    const payload = await this.authService.verifySupabaseToken(token);
+    const communities = await this.communitiesService.getMyCommunities(payload.sub);
+
+    return {
+      success: true,
+      data: communities,
+      meta: {
+        count: communities.length,
+      },
+    };
+  }
+
+  /**
    * GET /v1/communities/:id
    * Get single community (cached)
    */
@@ -90,4 +116,3 @@ export class CommunitiesController {
     };
   }
 }
-

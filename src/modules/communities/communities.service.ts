@@ -46,6 +46,21 @@ export class CommunitiesService {
   }
 
   /**
+   * Get communities joined by a user.
+   */
+  async getMyCommunities(userId: string) {
+    const cacheKey = `communities:me:${userId}`;
+    let communities = await this.redisService.getJson<any[]>(cacheKey);
+
+    if (!communities) {
+      communities = await this.supabaseService.getMyCommunities(userId);
+      await this.redisService.setJson(cacheKey, communities, this.detailTtl);
+    }
+
+    return communities;
+  }
+
+  /**
    * Get single community with caching
    */
   async getCommunity(communityId: string, userId?: string) {
@@ -105,6 +120,7 @@ export class CommunitiesService {
     
     if (userId) {
       await this.redisService.del(`community:member:${communityId}:${userId}`);
+      await this.redisService.del(`communities:me:${userId}`);
     }
   }
 
@@ -114,6 +130,6 @@ export class CommunitiesService {
   async invalidateMembership(communityId: string, userId: string) {
     await this.redisService.del(`community:member:${communityId}:${userId}`);
     await this.redisService.del(`community:${communityId}`);
+    await this.redisService.del(`communities:me:${userId}`);
   }
 }
-
