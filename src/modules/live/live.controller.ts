@@ -1,11 +1,4 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Param,
-  Body,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards } from '@nestjs/common';
 import { IsString, IsBoolean, IsOptional } from 'class-validator';
 import { LiveService } from './live.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
@@ -20,9 +13,14 @@ class StartLiveDto {
 class LiveTokenDto {
   @IsString()
   channelName: string;
-  
+
   @IsBoolean()
   isHost: boolean;
+}
+
+class AudienceLiveTokenDto {
+  @IsString()
+  channelName: string;
 }
 
 @Controller('live')
@@ -49,10 +47,7 @@ export class LiveController {
    */
   @Post('start')
   @UseGuards(AuthGuard)
-  async startLive(
-    @CurrentUser() userId: string,
-    @Body() dto: StartLiveDto,
-  ) {
+  async startLive(@CurrentUser() userId: string, @Body() dto: StartLiveDto) {
     const result = await this.liveService.startLiveSession({
       hostId: userId,
       title: dto.title,
@@ -70,15 +65,28 @@ export class LiveController {
    */
   @Post('token')
   @UseGuards(AuthGuard)
-  async getToken(
-    @CurrentUser() userId: string,
-    @Body() dto: LiveTokenDto,
-  ) {
+  async getToken(@CurrentUser() userId: string, @Body() dto: LiveTokenDto) {
     const result = await this.liveService.generateToken({
       channelName: dto.channelName,
       userId,
       isHost: dto.isHost,
     });
+
+    return {
+      success: true,
+      data: result,
+    };
+  }
+
+  /**
+   * POST /v1/live/token/audience
+   * Generate a subscriber-only token for an active live channel.
+   */
+  @Post('token/audience')
+  async getAudienceToken(@Body() dto: AudienceLiveTokenDto) {
+    const result = await this.liveService.generateAudienceToken(
+      dto.channelName,
+    );
 
     return {
       success: true,
@@ -131,10 +139,7 @@ export class LiveController {
    */
   @Post(':id/end')
   @UseGuards(AuthGuard)
-  async endLive(
-    @Param('id') sessionId: string,
-    @CurrentUser() userId: string,
-  ) {
+  async endLive(@Param('id') sessionId: string, @CurrentUser() userId: string) {
     const result = await this.liveService.endLiveSession(sessionId, userId);
 
     return {
@@ -175,4 +180,3 @@ export class LiveController {
     };
   }
 }
-

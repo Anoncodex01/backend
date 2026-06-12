@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import * as admin from 'firebase-admin';
 import { RedisService } from '../../core/redis/redis.service';
@@ -154,10 +159,7 @@ export class LiveService {
   /**
    * Start a new live session
    */
-  async startLiveSession(data: {
-    hostId: string;
-    title?: string;
-  }) {
+  async startLiveSession(data: { hostId: string; title?: string }) {
     this.validateLiveTitle(data.title);
     const channelName = `live_${uuidv4().substring(0, 8)}`;
     const hostAgoraUid = this.buildAgoraUid(data.hostId);
@@ -188,7 +190,9 @@ export class LiveService {
         channelName,
         title: data.title,
       })
-      .catch((error) => console.error('Error sending live start notification:', error));
+      .catch((error) =>
+        console.error('Error sending live start notification:', error),
+      );
 
     return {
       session,
@@ -202,10 +206,7 @@ export class LiveService {
   /**
    * Join a live session as viewer
    */
-  async joinLiveSession(data: {
-    sessionId: string;
-    userId: string;
-  }) {
+  async joinLiveSession(data: { sessionId: string; userId: string }) {
     // Get session from cache or database
     const cacheKey = `live:${data.sessionId}:info`;
     let session = await this.redisService.getJson<any>(cacheKey);
@@ -226,11 +227,19 @@ export class LiveService {
     );
 
     // Add to viewers set
-    await this.redisService.sadd(`live:${data.sessionId}:viewer_set`, data.userId);
+    await this.redisService.sadd(
+      `live:${data.sessionId}:viewer_set`,
+      data.userId,
+    );
 
     // Update viewer count
-    const viewerCount = await this.redisService.scard(`live:${data.sessionId}:viewer_set`);
-    await this.redisService.set(`live:${data.sessionId}:viewers`, viewerCount.toString());
+    const viewerCount = await this.redisService.scard(
+      `live:${data.sessionId}:viewer_set`,
+    );
+    await this.redisService.set(
+      `live:${data.sessionId}:viewers`,
+      viewerCount.toString(),
+    );
 
     return {
       token,
@@ -249,8 +258,13 @@ export class LiveService {
     await this.redisService.srem(`live:${sessionId}:viewer_set`, userId);
 
     // Update viewer count
-    const viewerCount = await this.redisService.scard(`live:${sessionId}:viewer_set`);
-    await this.redisService.set(`live:${sessionId}:viewers`, viewerCount.toString());
+    const viewerCount = await this.redisService.scard(
+      `live:${sessionId}:viewer_set`,
+    );
+    await this.redisService.set(
+      `live:${sessionId}:viewers`,
+      viewerCount.toString(),
+    );
 
     return { viewerCount };
   }
@@ -263,7 +277,9 @@ export class LiveService {
     await this.supabaseService.endLiveSession(sessionId);
 
     // Get final counts
-    const viewerCount = await this.redisService.get(`live:${sessionId}:viewers`);
+    const viewerCount = await this.redisService.get(
+      `live:${sessionId}:viewers`,
+    );
     const heartCount = await this.redisService.get(`live:${sessionId}:hearts`);
 
     // Clean up Redis
@@ -281,13 +297,18 @@ export class LiveService {
   /**
    * Send a heart (with rate limiting)
    */
-  async sendHeart(sessionId: string, userId: string): Promise<{ allowed: boolean; heartCount: number }> {
+  async sendHeart(
+    sessionId: string,
+    userId: string,
+  ): Promise<{ allowed: boolean; heartCount: number }> {
     // Rate limit: max 5 hearts per second per user
     const rateLimitKey = `live:${sessionId}:heart_limit:${userId}`;
     const allowed = await this.redisService.rateLimit(rateLimitKey, 5, 1);
 
     if (!allowed) {
-      const heartCount = parseInt(await this.redisService.get(`live:${sessionId}:hearts`) || '0');
+      const heartCount = parseInt(
+        (await this.redisService.get(`live:${sessionId}:hearts`)) || '0',
+      );
       return { allowed: false, heartCount };
     }
 
@@ -317,7 +338,7 @@ export class LiveService {
    */
   async getActiveLiveSessions() {
     const cacheKey = 'live:active_sessions';
-    
+
     return this.redisService.getOrSet(
       cacheKey,
       () => this.supabaseService.getLiveSessions(20),
@@ -359,6 +380,30 @@ export class LiveService {
       console.error(`❌ Error generating token: ${error}`);
       throw error;
     }
+  }
+
+  async generateAudienceToken(channelName: string) {
+    if (!/^live_[A-Za-z0-9_-]+$/.test(channelName)) {
+      throw new BadRequestException('Invalid live channel');
+    }
+
+    const firestore = this.firebaseService.getFirestore();
+    const snapshot = await firestore
+      .collection('live_sessions')
+      .where('agoraChannel', '==', channelName)
+      .limit(1)
+      .get();
+    const session = snapshot.docs[0]?.data();
+
+    if (!session || session.isLive !== true || session.endedAt != null) {
+      throw new NotFoundException('Live stream is no longer active');
+    }
+
+    return this.generateToken({
+      channelName,
+      userId: `audience-${uuidv4()}`,
+      isHost: false,
+    });
   }
 
   /**
