@@ -19,7 +19,7 @@ export class AnalyticsService {
   private readonly logger = new Logger(AnalyticsService.name);
   private readonly monetizationFollowersRequirement = 1000;
   private readonly monetizationVideosRequirement = 10;
-  private readonly monetizationViews30dRequirement = 5000;
+  private readonly monetizationViews30dRequirement = 500000;
   private readonly grossCpmTzs = 22;
   private readonly creatorShareRate = 0.5;
 

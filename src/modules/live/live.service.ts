@@ -121,7 +121,6 @@ export class LiveService {
       if (snapshot.empty) return;
 
       const now = Date.now();
-      const batch = firestore.batch();
       let cleaned = 0;
 
       for (const doc of snapshot.docs) {
@@ -131,25 +130,43 @@ export class LiveService {
         const referenceTime = hostLastSeenAt ?? startedAt;
 
         if (!referenceTime) continue;
-        if (now - referenceTime.getTime() <= this.staleHostTimeoutMs) continue;
+        const timeoutMs = data.mode === 'voice' ? 300_000 : this.staleHostTimeoutMs;
+        if (now - referenceTime.getTime() <= timeoutMs) continue;
 
-        batch.set(
-          doc.ref,
-          {
-            isLive: false,
-            hostOnline: false,
-            endedAt: admin.firestore.FieldValue.serverTimestamp(),
-            endedReason: 'host_timeout',
-            viewerCount: 0,
-          },
-          { merge: true },
-        );
-        cleaned++;
+        const didClean = await firestore.runTransaction(async (transaction) => {
+          const latestSnapshot = await transaction.get(doc.ref);
+          const latest = latestSnapshot.data();
+          if (!latest || latest.isLive !== true || latest.endedAt != null) {
+            return false;
+          }
+          const latestHeartbeat =
+            latest.hostLastSeenAt?.toDate?.() ?? latest.startedAt?.toDate?.();
+          const latestTimeoutMs =
+            latest.mode === 'voice' ? 300_000 : this.staleHostTimeoutMs;
+          if (
+            !latestHeartbeat ||
+            Date.now() - latestHeartbeat.getTime() <= latestTimeoutMs
+          ) {
+            return false;
+          }
+          transaction.set(
+            doc.ref,
+            {
+              isLive: false,
+              hostOnline: false,
+              endedAt: admin.firestore.FieldValue.serverTimestamp(),
+              endedReason: 'host_timeout',
+              viewerCount: 0,
+            },
+            { merge: true },
+          );
+          return true;
+        });
+        if (didClean) cleaned++;
       }
 
       if (cleaned === 0) return;
 
-      await batch.commit();
       this.logger.warn(`Cleaned up ${cleaned} stale Firestore live session(s)`);
     } catch (error) {
       this.logger.warn(`Stale Firestore live cleanup skipped: ${error}`);
