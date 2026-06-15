@@ -46,6 +46,19 @@ export class LiveStartNotificationDto {
   title?: string;
 }
 
+export class MessageNotificationDto {
+  @IsString()
+  recipientId: string;
+  @IsString()
+  senderName: string;
+  @IsString()
+  messagePreview: string;
+  @IsString()
+  conversationId: string;
+  @IsString()
+  messageId: string;
+}
+
 @Controller('notifications')
 export class NotificationsController {
   constructor(private notificationsService: NotificationsService) {}
@@ -63,6 +76,24 @@ export class NotificationsController {
       success: true,
       data: result,
     };
+  }
+
+  @Post('message')
+  @UseGuards(AuthGuard)
+  async sendMessageNotification(
+    @CurrentUser() senderId: string,
+    @Body() dto: MessageNotificationDto,
+  ) {
+    const result = await this.notificationsService.sendMessageNotification({
+      recipientId: dto.recipientId,
+      senderId,
+      senderName: dto.senderName,
+      messagePreview: dto.messagePreview,
+      conversationId: dto.conversationId,
+      messageId: dto.messageId,
+    });
+
+    return { success: true, data: result };
   }
 
   /**

@@ -368,10 +368,11 @@ export class NotificationsService {
     senderName: string;
     messagePreview: string;
     conversationId: string;
+    messageId?: string;
   }) {
     const actorImage = await this.getUserProfileImage(data.senderId);
 
-    await this.sendPushNotification({
+    return this.sendPushNotification({
       userId: data.recipientId,
       type: 'message',
       title: data.senderName,
@@ -383,6 +384,7 @@ export class NotificationsService {
       data: {
         conversationId: data.conversationId,
         senderId: data.senderId,
+        ...(data.messageId ? { messageId: data.messageId } : {}),
       },
     });
   }
