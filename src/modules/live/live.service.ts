@@ -358,7 +358,45 @@ export class LiveService {
 
     return this.redisService.getOrSet(
       cacheKey,
-      () => this.supabaseService.getLiveSessions(20),
+      async () => {
+        try {
+          const firestore = this.firebaseService.getFirestore();
+          const snapshot = await firestore
+            .collection('live_sessions')
+            .where('isLive', '==', true)
+            .where('endedAt', '==', null)
+            .limit(20)
+            .get();
+
+          return snapshot.docs.map((doc) => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              ...data,
+              startedAt: data.startedAt?.toDate?.()?.toISOString?.() ?? data.startedAt ?? null,
+              hostLastSeenAt:
+                data.hostLastSeenAt?.toDate?.()?.toISOString?.() ?? data.hostLastSeenAt ?? null,
+            };
+          });
+        } catch (firestoreError) {
+          this.logger.warn(
+            `Firestore live session probe failed, falling back to Supabase: ${firestoreError}`,
+          );
+        }
+
+        try {
+          return await this.supabaseService.getLiveSessions(20);
+        } catch (supabaseError: any) {
+          const message = String(supabaseError?.message || supabaseError || '');
+          if (message.includes('live_sessions') || message.includes('schema cache')) {
+            this.logger.warn(
+              'Supabase live_sessions table is unavailable; returning no active SQL live sessions',
+            );
+            return [];
+          }
+          throw supabaseError;
+        }
+      },
       10, // Refresh every 10 seconds
     );
   }

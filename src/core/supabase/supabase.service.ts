@@ -51,7 +51,7 @@ export class SupabaseService implements OnModuleInit {
       .from('users')
       .select('*')
       .eq('username', username)
-      .single();
+      .maybeSingle();
 
     if (error) throw error;
     return data;
