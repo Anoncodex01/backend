@@ -584,6 +584,7 @@ export class PaymentsService {
       .update({ status: "expired", updated_at: nowIso })
       .eq("user_id", userId)
       .eq("status", "active")
+      .not("ends_at", "is", null)
       .lte("ends_at", nowIso);
 
     const { data: activeSub } = await client
@@ -593,7 +594,7 @@ export class PaymentsService {
       )
       .eq("user_id", userId)
       .eq("status", "active")
-      .gt("ends_at", nowIso)
+      .or(`ends_at.gt.${nowIso},ends_at.is.null`)
       .order("ends_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1326,27 +1327,36 @@ export class PaymentsService {
   private async syncUserVerificationFlag(userId: string) {
     const client = this.supabase.getClient();
     const nowIso = new Date().toISOString();
-    const [{ data: activeSub }, { data: latestKyc }] = await Promise.all([
-      client
-        .from("user_verification_subscriptions")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("status", "active")
-        .gt("ends_at", nowIso)
-        .limit(1)
-        .maybeSingle(),
-      client
-        .from("user_kyc_submissions")
-        .select("status")
-        .eq("user_id", userId)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ]);
+    const [{ data: activeSub }, { data: latestKyc }, { count: subCount }] =
+      await Promise.all([
+        client
+          .from("user_verification_subscriptions")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .or(`ends_at.gt.${nowIso},ends_at.is.null`)
+          .limit(1)
+          .maybeSingle(),
+        client
+          .from("user_kyc_submissions")
+          .select("status")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        client
+          .from("user_verification_subscriptions")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId),
+      ]);
     const kycApproved = latestKyc?.status === "approved";
+    const shouldBeVerified = !!activeSub && kycApproved;
+    // Users with no subscription history at all were verified directly by an admin.
+    // Only an explicit admin "unverify" action should remove their badge.
+    if (!shouldBeVerified && (!subCount || subCount === 0)) return;
     await client
       .from("users")
-      .update({ is_verified: !!activeSub && kycApproved })
+      .update({ is_verified: shouldBeVerified })
       .eq("id", userId);
     await this.invalidateUserVerificationCaches(userId);
   }
@@ -1896,6 +1906,7 @@ export class PaymentsService {
         .from("user_verification_subscriptions")
         .update({ status: "expired", updated_at: nowIso })
         .eq("status", "active")
+        .not("ends_at", "is", null)
         .lte("ends_at", nowIso)
         .select("user_id");
 
