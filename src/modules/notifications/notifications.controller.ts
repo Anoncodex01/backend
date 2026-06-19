@@ -46,6 +46,19 @@ export class LiveStartNotificationDto {
   title?: string;
 }
 
+export class NewPostNotificationDto {
+  @IsString()
+  postId: string;
+  @IsString()
+  postType: string; // 'video' | 'image'
+  @IsOptional()
+  @IsString()
+  caption?: string;
+  @IsOptional()
+  @IsString()
+  thumbnailUrl?: string;
+}
+
 export class MessageNotificationDto {
   @IsString()
   recipientId: string;
@@ -176,5 +189,30 @@ export class NotificationsController {
       success: true,
       data: result,
     };
+  }
+
+  /**
+   * POST /v1/notifications/new-post
+   * Notify followers when the authenticated user publishes a new post.
+   * Fire-and-forget from the client — fan-out is handled server-side.
+   */
+  @Post('new-post')
+  @UseGuards(AuthGuard)
+  async sendNewPostNotification(
+    @CurrentUser() userId: string,
+    @Body() dto: NewPostNotificationDto,
+  ) {
+    // Run fan-out in the background so the client doesn't wait for it
+    this.notificationsService
+      .sendNewPostNotification({
+        posterId: userId,
+        postId: dto.postId,
+        postType: dto.postType,
+        caption: dto.caption,
+        thumbnailUrl: dto.thumbnailUrl,
+      })
+      .catch((err) => console.error('new-post notification fan-out failed:', err));
+
+    return { success: true };
   }
 }

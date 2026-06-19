@@ -399,19 +399,30 @@ export class AnalyticsService {
 
     const followersCurrent = Number(profile.followers_count || 0);
     const videosCurrent = posts.length;
-
-    const last30Boundary = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const postsLast30Days = posts.filter((post) => {
-      const createdAt = post.created_at ? new Date(post.created_at).toISOString() : null;
-      return createdAt != null && createdAt >= last30Boundary;
-    });
-
-    const views30dCurrent = postsLast30Days.reduce(
-      (sum, post) => sum + Number(post.views_count || 0),
-      0,
-    );
-
     const isVerified = Boolean(profile.is_verified);
+
+    // Fetch actual view events from the last 30 days across ALL user posts.
+    // Previously this summed views_count on posts created in the last 30 days,
+    // which excluded any views on older posts and massively undercounted.
+    const postIds = posts.map((post) => post.id).filter(Boolean);
+    let windowViews: any[] = [];
+    if (postIds.length > 0) {
+      const { data: views, error: viewsError } = await client
+        .from('post_views')
+        .select('post_id, viewed_at')
+        .in('post_id', postIds)
+        .gte('viewed_at', windowStart.toISOString())
+        .lte('viewed_at', windowEnd.toISOString());
+
+      if (viewsError) {
+        throw viewsError;
+      }
+      windowViews = views || [];
+    }
+
+    const windowImpressions = windowViews.length;
+    // Use the window view count (actual events in last 30 days) for the requirement.
+    const views30dCurrent = windowImpressions;
 
     const requirements: MonetizationRequirementSummary = {
       followersRequired: this.monetizationFollowersRequirement,
@@ -430,24 +441,6 @@ export class AnalyticsService {
       views30dCurrent >= this.monetizationViews30dRequirement &&
       Boolean(payoutMethod) &&
       isVerified;
-
-    const postIds = posts.map((post) => post.id).filter(Boolean);
-    let windowViews: any[] = [];
-    if (postIds.length > 0) {
-      const { data: views, error: viewsError } = await client
-        .from('post_views')
-        .select('post_id, viewed_at')
-        .in('post_id', postIds)
-        .gte('viewed_at', windowStart.toISOString())
-        .lte('viewed_at', windowEnd.toISOString());
-
-      if (viewsError) {
-        throw viewsError;
-      }
-      windowViews = views || [];
-    }
-
-    const windowImpressions = windowViews.length;
     const lifetimeImpressions = posts.reduce(
       (sum, post) => sum + Number(post.views_count || 0),
       0,

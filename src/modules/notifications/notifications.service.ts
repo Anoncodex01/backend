@@ -360,6 +360,148 @@ export class NotificationsService {
   }
 
   /**
+   * Fan out a "new post" notification to the poster's followers.
+   * Debounced per post so duplicate calls (e.g. retries) don't double-notify.
+   */
+  async sendNewPostNotification(data: {
+    posterId: string;
+    postId: string;
+    postType: string;        // 'video' | 'image'
+    caption?: string;
+    thumbnailUrl?: string;
+  }) {
+    if (!data.posterId || !data.postId) {
+      return { sent: false, reason: 'missing_poster_or_post_id' };
+    }
+
+    const debounceKey = `notif_debounce:new_post:${data.postId}`;
+    const wasRecentlySent = await this.redisService.exists(debounceKey);
+    if (wasRecentlySent) {
+      return { sent: false, reason: 'duplicate_new_post' };
+    }
+    await this.redisService.set(debounceKey, '1', 60 * 60); // 1 h debounce
+
+    const client = this.supabaseService.getClient();
+    const poster = await this.supabaseService.getUser(data.posterId).catch(() => null);
+    const posterName = poster?.full_name || poster?.username || 'Someone you follow';
+    const posterAvatar = poster?.profile_image_url || undefined;
+    const posterIsVerified = poster?.is_verified === true;
+
+    const isVideo = data.postType === 'video';
+    const title = `${posterName} posted a new ${isVideo ? 'video' : 'photo'}`;
+    const body = data.caption?.trim() || (isVideo ? 'Check out this new video' : 'Check out this new post');
+
+    // Paginate through all followers (1 000 per page)
+    const followerIds: string[] = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const { data: rows, error } = await client
+        .from('follows')
+        .select('follower_id')
+        .eq('following_id', data.posterId)
+        .range(from, to);
+
+      if (error) {
+        console.error('Error loading new-post notification followers:', error);
+        break;
+      }
+
+      const ids = (rows || [])
+        .map((row: any) => row.follower_id)
+        .filter((id: any) => typeof id === 'string' && id !== data.posterId);
+      followerIds.push(...ids);
+      if (!rows || rows.length < pageSize) break;
+    }
+
+    const uniqueFollowerIds = [...new Set(followerIds)];
+    if (uniqueFollowerIds.length === 0) {
+      return { sent: false, reason: 'no_followers' };
+    }
+
+    // Bulk-insert notification rows in Supabase (500 per batch)
+    const notificationRows = uniqueFollowerIds.map((userId) => ({
+      user_id: userId,
+      type: 'new_post',
+      title,
+      body,
+      actor_id: data.posterId,
+      actor_username: posterName,
+      actor_avatar: posterAvatar,
+      post_id: data.postId,
+      post_thumbnail: data.thumbnailUrl || null,
+      data: {
+        type: 'new_post',
+        postId: data.postId,
+        post_id: data.postId,
+        postType: data.postType,
+        posterId: data.posterId,
+        actor_is_verified: posterIsVerified,
+      },
+      is_read: false,
+    }));
+
+    for (let i = 0; i < notificationRows.length; i += 500) {
+      const batch = notificationRows.slice(i, i + 500);
+      const { error } = await client.from('notifications').insert(batch);
+      if (error) {
+        console.error('Error storing new-post notifications:', error);
+      }
+    }
+
+    // Collect all FCM tokens (100 users at a time to avoid overloading Redis)
+    const allTokens: string[] = [];
+    for (let i = 0; i < uniqueFollowerIds.length; i += 100) {
+      const batchIds = uniqueFollowerIds.slice(i, i + 100);
+      const tokenBatches = await Promise.all(
+        batchIds.map((userId) => this.authService.getFcmTokens(userId)),
+      );
+      for (const tokens of tokenBatches) {
+        allTokens.push(...tokens);
+      }
+    }
+
+    const uniqueTokens = [...new Set(allTokens)].filter(Boolean);
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < uniqueTokens.length; i += 500) {
+      const tokens = uniqueTokens.slice(i, i + 500);
+      try {
+        const response = await this.firebaseService.sendMulticastNotification({
+          tokens,
+          title,
+          body,
+          imageUrl: data.thumbnailUrl || posterAvatar,
+          data: {
+            type: 'new_post',
+            postId: data.postId,
+            post_id: data.postId,
+            postType: data.postType,
+            posterId: data.posterId,
+            poster_id: data.posterId,
+          },
+        });
+        successCount += response.successCount;
+        failureCount += response.failureCount;
+      } catch (error) {
+        failureCount += tokens.length;
+        console.error('Error sending new-post FCM batch:', error);
+      }
+    }
+
+    const result = {
+      sent: uniqueTokens.length > 0,
+      followers: uniqueFollowerIds.length,
+      tokens: uniqueTokens.length,
+      successCount,
+      failureCount,
+    };
+    console.log('📢 New post notification result:', { posterId: data.posterId, postId: data.postId, ...result });
+    return result;
+  }
+
+  /**
    * Send notification for message
    */
   async sendMessageNotification(data: {

@@ -427,20 +427,39 @@ export class FeedService {
    * Record view (for analytics and trending calculation)
    */
   async recordView(postId: string, userId?: string) {
-    try {
-    // Increment view counter in Redis
-    const viewKey = `post:${postId}:views`;
-    await this.redisService.incr(viewKey);
+    let isNewUniqueView = true;
 
-    // If user is logged in, track unique view
-    if (userId) {
-      const uniqueKey = `post:${postId}:unique_viewers`;
-      await this.redisService.sadd(uniqueKey, userId);
-      await this.redisService.expire(uniqueKey, 24 * 60 * 60); // 24 hours
+    try {
+      // Increment view counter in Redis
+      const viewKey = `post:${postId}:views`;
+      await this.redisService.incr(viewKey);
+
+      // If user is logged in, track unique view (sadd returns 1 if newly added)
+      if (userId) {
+        const uniqueKey = `post:${postId}:unique_viewers`;
+        const added = await this.redisService.sadd(uniqueKey, userId);
+        await this.redisService.expire(uniqueKey, 24 * 60 * 60); // 24 hours
+        isNewUniqueView = added === 1;
       }
     } catch (error) {
       console.warn('Redis view tracking failed:', error);
-      // Continue without tracking - not critical
     }
+
+    // Persist to Supabase for 30-day analytics (fire-and-forget).
+    // Only insert once per unique viewer per 24h window (gated by Redis above).
+    if (isNewUniqueView) {
+      this.persistViewToSupabase(postId, userId).catch((err) =>
+        console.warn('View persist to Supabase failed (non-critical):', err),
+      );
+    }
+  }
+
+  private async persistViewToSupabase(postId: string, userId?: string): Promise<void> {
+    const client = this.supabaseService.getClient();
+    await client.from('post_views').insert({
+      post_id: postId,
+      user_id: userId ?? null,
+      viewed_at: new Date().toISOString(),
+    });
   }
 }
