@@ -2022,9 +2022,9 @@ export class PaymentsService {
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
     const snippeMinPayout = 5000; // Snippe API minimum payout amount
-    const platformFeeRate = 0.25;
+    const platformFeeRate = 0.19;
     const withdrawFeeRate = 0.03;
-    const totalFeeRate = platformFeeRate + withdrawFeeRate; // 28%
+    const totalFeeRate = platformFeeRate + withdrawFeeRate; // 22%
     const minAmountTzs = 10000; // Business minimum displayed in app
     try {
       const amountTzs = Number(dto.amount || 0);
@@ -2040,13 +2040,14 @@ export class PaymentsService {
         throw new BadRequestException("Coin rate not configured");
       }
 
-      // Deduct requested amount + fees from wallet balance.
+      // Method 1: fee is taken FROM the requested amount (not added on top).
+      // Platform keeps 22% of amountTzs, creator receives 78%.
       const grossAmount = amountTzs;
-      const platformFeeAmount = amountTzs * platformFeeRate;
-      const withdrawFeeAmount = amountTzs * withdrawFeeRate;
+      const platformFeeAmount = Math.ceil(amountTzs * platformFeeRate);
+      const withdrawFeeAmount = Math.ceil(amountTzs * withdrawFeeRate);
       const feeAmount = platformFeeAmount + withdrawFeeAmount;
-      const totalDeductionTzs = amountTzs * (1 + totalFeeRate);
-      const netAmount = amountTzs;
+      const netAmount = amountTzs - feeAmount;
+      const totalDeductionTzs = amountTzs;
       const coinsRequired = Math.ceil(totalDeductionTzs * this.coinRate);
 
       const { data: payoutMethod } = await client
@@ -2094,7 +2095,7 @@ export class PaymentsService {
 
       if (availableCoins < coinsRequired) {
         throw new BadRequestException(
-          `Not enough reward balance. Required: ${coinsRequired.toLocaleString()} coins (TZS ${Math.ceil(totalDeductionTzs).toLocaleString()} incl. 25% platform + 3% withdraw fee). Available: ${availableCoins.toLocaleString()} coins.`,
+          `Not enough reward balance. Required: ${coinsRequired.toLocaleString()} coins (TZS ${Math.ceil(totalDeductionTzs).toLocaleString()} incl. 19% platform + 3% withdraw fee). Available: ${availableCoins.toLocaleString()} coins.`,
         );
       }
 
