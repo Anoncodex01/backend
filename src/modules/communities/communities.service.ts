@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { RedisService } from '../../core/redis/redis.service';
-import { SupabaseService } from '../../core/supabase/supabase.service';
+import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { RedisService } from "../../core/redis/redis.service";
+import { SupabaseService } from "../../core/supabase/supabase.service";
 
 @Injectable()
 export class CommunitiesService {
@@ -14,18 +14,20 @@ export class CommunitiesService {
     private configService: ConfigService,
   ) {
     // Community list cache for 5 minutes, details for 3 minutes
-    this.listTtl = this.configService.get('CACHE_COMMUNITY_LIST_TTL', 300);
-    this.detailTtl = this.configService.get('CACHE_COMMUNITY_DETAIL_TTL', 180);
+    this.listTtl = this.configService.get("CACHE_COMMUNITY_LIST_TTL", 300);
+    this.detailTtl = this.configService.get("CACHE_COMMUNITY_DETAIL_TTL", 180);
   }
 
   /**
    * Get list of communities with caching
    */
-  async getCommunities(options: {
-    limit?: number;
-    offset?: number;
-    userId?: string;
-  } = {}) {
+  async getCommunities(
+    options: {
+      limit?: number;
+      offset?: number;
+      userId?: string;
+    } = {},
+  ) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
     const cacheKey = `communities:list:${offset}:${limit}`;
@@ -39,7 +41,10 @@ export class CommunitiesService {
 
     // Enrich with membership status if user is logged in
     if (options.userId && communities.length > 0) {
-      communities = await this.enrichWithMembership(communities, options.userId);
+      communities = await this.enrichWithMembership(
+        communities,
+        options.userId,
+      );
     }
 
     return communities;
@@ -84,6 +89,16 @@ export class CommunitiesService {
     return community;
   }
 
+  async getCommunityMembers(
+    communityId: string,
+    options: {
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) {
+    return this.supabaseService.getCommunityMembers(communityId, options);
+  }
+
   /**
    * Check if user is a member of community (cached)
    */
@@ -92,11 +107,18 @@ export class CommunitiesService {
 
     const cached = await this.redisService.get(cacheKey);
     if (cached !== null) {
-      return cached === 'true';
+      return cached === "true";
     }
 
-    const isMember = await this.supabaseService.isCommunityMember(communityId, userId);
-    await this.redisService.set(cacheKey, isMember ? 'true' : 'false', this.detailTtl);
+    const isMember = await this.supabaseService.isCommunityMember(
+      communityId,
+      userId,
+    );
+    await this.redisService.set(
+      cacheKey,
+      isMember ? "true" : "false",
+      this.detailTtl,
+    );
 
     return isMember;
   }
@@ -105,8 +127,11 @@ export class CommunitiesService {
    * Enrich communities with membership status
    */
   private async enrichWithMembership(communities: any[], userId: string) {
-    const membershipPromises = communities.map(c =>
-      this.isMember(c.id, userId).then(isMember => ({ ...c, is_member: isMember }))
+    const membershipPromises = communities.map((c) =>
+      this.isMember(c.id, userId).then((isMember) => ({
+        ...c,
+        is_member: isMember,
+      })),
     );
     return Promise.all(membershipPromises);
   }
@@ -116,8 +141,8 @@ export class CommunitiesService {
    */
   async invalidateCommunity(communityId: string, userId?: string) {
     await this.redisService.del(`community:${communityId}`);
-    await this.redisService.deletePattern('communities:list:*');
-    
+    await this.redisService.deletePattern("communities:list:*");
+
     if (userId) {
       await this.redisService.del(`community:member:${communityId}:${userId}`);
       await this.redisService.del(`communities:me:${userId}`);

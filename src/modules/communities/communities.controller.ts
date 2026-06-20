@@ -5,11 +5,11 @@ import {
   Query,
   Headers,
   UnauthorizedException,
-} from '@nestjs/common';
-import { CommunitiesService } from './communities.service';
-import { AuthService } from '../auth/auth.service';
+} from "@nestjs/common";
+import { CommunitiesService } from "./communities.service";
+import { AuthService } from "../auth/auth.service";
 
-@Controller('communities')
+@Controller("communities")
 export class CommunitiesController {
   constructor(
     private communitiesService: CommunitiesService,
@@ -22,15 +22,15 @@ export class CommunitiesController {
    */
   @Get()
   async getCommunities(
-    @Query('limit') limit: number = 20,
-    @Query('offset') offset: number = 0,
-    @Headers('authorization') authHeader?: string,
+    @Query("limit") limit: number = 20,
+    @Query("offset") offset: number = 0,
+    @Headers("authorization") authHeader?: string,
   ) {
     // Extract user ID if authenticated
     let userId: string | undefined;
-    if (authHeader?.startsWith('Bearer ')) {
+    if (authHeader?.startsWith("Bearer ")) {
       try {
-        const token = authHeader.replace('Bearer ', '');
+        const token = authHeader.replace("Bearer ", "");
         const payload = await this.authService.verifySupabaseToken(token);
         userId = payload.sub;
       } catch {
@@ -60,17 +60,17 @@ export class CommunitiesController {
    * GET /v1/communities/me
    * Get communities joined by the authenticated user.
    */
-  @Get('me')
-  async getMyCommunities(
-    @Headers('authorization') authHeader?: string,
-  ) {
-    if (!authHeader?.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Missing authorization token');
+  @Get("me")
+  async getMyCommunities(@Headers("authorization") authHeader?: string) {
+    if (!authHeader?.startsWith("Bearer ")) {
+      throw new UnauthorizedException("Missing authorization token");
     }
 
-    const token = authHeader.replace('Bearer ', '');
+    const token = authHeader.replace("Bearer ", "");
     const payload = await this.authService.verifySupabaseToken(token);
-    const communities = await this.communitiesService.getMyCommunities(payload.sub);
+    const communities = await this.communitiesService.getMyCommunities(
+      payload.sub,
+    );
 
     return {
       success: true,
@@ -82,18 +82,56 @@ export class CommunitiesController {
   }
 
   /**
+   * GET /v1/communities/:id/members
+   * Get paged community members with hydrated user profiles.
+   */
+  @Get(":id/members")
+  async getCommunityMembers(
+    @Param("id") communityId: string,
+    @Query("limit") limit: string = "50",
+    @Query("offset") offset: string = "0",
+    @Headers("authorization") authHeader?: string,
+  ) {
+    if (!authHeader?.startsWith("Bearer ")) {
+      throw new UnauthorizedException("Missing authorization token");
+    }
+
+    const token = authHeader.replace("Bearer ", "");
+    await this.authService.verifySupabaseToken(token);
+
+    const members = await this.communitiesService.getCommunityMembers(
+      communityId,
+      {
+        limit: Number(limit) || 50,
+        offset: Number(offset) || 0,
+      },
+    );
+
+    return {
+      success: true,
+      data: members,
+      meta: {
+        limit: Number(limit) || 50,
+        offset: Number(offset) || 0,
+        count: members.length,
+        hasMore: members.length === (Number(limit) || 50),
+      },
+    };
+  }
+
+  /**
    * GET /v1/communities/:id
    * Get single community (cached)
    */
-  @Get(':id')
+  @Get(":id")
   async getCommunity(
-    @Param('id') communityId: string,
-    @Headers('authorization') authHeader?: string,
+    @Param("id") communityId: string,
+    @Headers("authorization") authHeader?: string,
   ) {
     let userId: string | undefined;
-    if (authHeader?.startsWith('Bearer ')) {
+    if (authHeader?.startsWith("Bearer ")) {
       try {
-        const token = authHeader.replace('Bearer ', '');
+        const token = authHeader.replace("Bearer ", "");
         const payload = await this.authService.verifySupabaseToken(token);
         userId = payload.sub;
       } catch {
@@ -101,12 +139,15 @@ export class CommunitiesController {
       }
     }
 
-    const community = await this.communitiesService.getCommunity(communityId, userId);
+    const community = await this.communitiesService.getCommunity(
+      communityId,
+      userId,
+    );
 
     if (!community) {
       return {
         success: false,
-        message: 'Community not found',
+        message: "Community not found",
       };
     }
 
