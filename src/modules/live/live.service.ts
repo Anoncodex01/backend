@@ -409,9 +409,34 @@ export class LiveService {
     userId: string;
     isHost: boolean;
   }) {
+    // Cache key is unique per user + channel + role so UIDs never collide.
+    // TTL is 5 min less than the Agora token expiry so we never serve an
+    // already-expired token from cache.
+    const cacheKey = `live:token:${data.channelName}:${data.userId}:${data.isHost ? 'h' : 'v'}`;
+    const cacheTtl = data.isHost ? 82800 : 6300; // 23 h for host, 105 min for viewer
+
+    // --- Cache read ---
+    try {
+      const cached = await this.redisService.getJson<{
+        token: string;
+        uid: number;
+        appId: string;
+        channelName: string;
+      }>(cacheKey);
+      if (cached) {
+        this.logger.debug(
+          `⚡ Token cache hit: ${data.channelName} (isHost: ${data.isHost})`,
+        );
+        return cached;
+      }
+    } catch {
+      // Redis unavailable — fall through and generate fresh token
+    }
+
+    // --- Generate ---
     try {
       const role = data.isHost ? 'publisher' : 'subscriber';
-      const expirationSeconds = data.isHost ? 86400 : 7200; // 24 hours for host, 2 hours for viewer
+      const expirationSeconds = data.isHost ? 86400 : 7200;
       const agoraUid = this.buildAgoraUid(data.userId);
 
       const token = this.agoraService.generateRtcToken(
@@ -421,18 +446,26 @@ export class LiveService {
         expirationSeconds,
       );
 
-      console.log(
-        `✅ Token generated successfully for channel: ${data.channelName}, isHost: ${data.isHost}, uid: ${agoraUid}, token length: ${token.length}`,
-      );
-
-      return {
+      const result = {
         token,
         uid: agoraUid,
         appId: this.agoraService.getAppId(),
         channelName: data.channelName,
       };
+
+      // --- Cache write (non-critical) ---
+      try {
+        await this.redisService.setJson(cacheKey, result, cacheTtl);
+      } catch {
+        // Redis write failed — continue without cache
+      }
+
+      this.logger.log(
+        `✅ Token generated: ${data.channelName} (isHost: ${data.isHost}, uid: ${agoraUid})`,
+      );
+      return result;
     } catch (error) {
-      console.error(`❌ Error generating token: ${error}`);
+      this.logger.error(`❌ Error generating token: ${error}`);
       throw error;
     }
   }
