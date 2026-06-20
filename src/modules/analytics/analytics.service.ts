@@ -415,9 +415,12 @@ export class AnalyticsService {
         .lte('viewed_at', windowEnd.toISOString());
 
       if (viewsError) {
-        throw viewsError;
+        // Table may not exist yet — degrade gracefully instead of crashing
+        this.logger.warn(`post_views query failed (table may not exist): ${viewsError.message}`);
+        windowViews = [];
+      } else {
+        windowViews = views || [];
       }
-      windowViews = views || [];
     }
 
     const windowImpressions = windowViews.length;

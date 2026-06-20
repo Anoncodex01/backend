@@ -455,11 +455,17 @@ export class FeedService {
   }
 
   private async persistViewToSupabase(postId: string, userId?: string): Promise<void> {
+    // user_id is NOT NULL on post_views — skip anonymous views entirely
+    if (!userId) return;
     const client = this.supabaseService.getClient();
-    await client.from('post_views').insert({
+    const { error } = await client.from('post_views').insert({
       post_id: postId,
-      user_id: userId ?? null,
+      user_id: userId,
       viewed_at: new Date().toISOString(),
     });
+    // Unique constraint fires when the same user re-views within 24h — not an error
+    if (error && !error.message?.includes('unique') && !error.code?.includes('23505')) {
+      console.warn('View persist to Supabase failed:', error.message);
+    }
   }
 }
