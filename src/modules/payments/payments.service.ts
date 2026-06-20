@@ -2022,9 +2022,9 @@ export class PaymentsService {
   async createWithdrawal(userId: string, dto: CreateWithdrawalDto) {
     const client = this.supabase.getClient();
     const snippeMinPayout = 5000; // Snippe API minimum payout amount
-    const platformFeeRate = 0.19;
+    const platformFeeRate = 0.25;
     const withdrawFeeRate = 0.03;
-    const totalFeeRate = platformFeeRate + withdrawFeeRate; // 22%
+    const totalFeeRate = platformFeeRate + withdrawFeeRate; // 28%
     const minAmountTzs = 10000; // Business minimum displayed in app
     try {
       const amountTzs = Number(dto.amount || 0);
