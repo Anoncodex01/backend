@@ -15,5 +15,7 @@ ssh "$USER@$SERVER" '
   git pull origin main
   echo "Restarting services..."
   docker compose up -d --build
+  echo "Refreshing nginx upstream..."
+  docker compose restart nginx
   echo "Done. API and Nginx restarted."
 '
