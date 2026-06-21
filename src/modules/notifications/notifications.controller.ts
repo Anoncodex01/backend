@@ -3,9 +3,10 @@ import {
   Post,
   Body,
   UseGuards,
+  Headers,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-import { IsObject, IsOptional, IsString } from 'class-validator';
+import { ArrayNotEmpty, IsArray, IsObject, IsOptional, IsString } from 'class-validator';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
@@ -72,9 +73,58 @@ export class MessageNotificationDto {
   messageId: string;
 }
 
+export class AdminBroadcastNotificationDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  userIds: string[];
+
+  @IsOptional()
+  @IsString()
+  type?: string;
+
+  @IsString()
+  title: string;
+
+  @IsString()
+  body: string;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  productId?: string;
+
+  @IsOptional()
+  @IsString()
+  target?: string;
+}
+
 @Controller('notifications')
 export class NotificationsController {
   constructor(private notificationsService: NotificationsService) {}
+
+  /**
+   * POST /v1/notifications/broadcast
+   * Admin-only broadcast to selected users. Used by the admin panel.
+   */
+  @Post('broadcast')
+  async sendAdminBroadcastNotification(
+    @Headers('x-admin-secret') adminSecret: string | undefined,
+    @Body() dto: AdminBroadcastNotificationDto,
+  ) {
+    const result = await this.notificationsService.sendAdminBroadcastNotification(
+      adminSecret,
+      dto,
+    );
+
+    return {
+      success: true,
+      data: result,
+    };
+  }
 
   /**
    * POST /v1/notifications/send

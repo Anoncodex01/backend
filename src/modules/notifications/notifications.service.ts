@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../../core/redis/redis.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
@@ -27,7 +28,18 @@ export class NotificationsService {
     private firebaseService: FirebaseService,
     private supabaseService: SupabaseService,
     private authService: AuthService,
+    private configService: ConfigService,
   ) {}
+
+  private assertAdminSecret(secret?: string) {
+    const expected =
+      this.configService.get<string>('SUPPORT_ADMIN_SECRET', '') ||
+      this.configService.get<string>('ADMIN_SECRET', '');
+
+    if (!expected || secret !== expected) {
+      throw new ForbiddenException('Invalid admin secret');
+    }
+  }
 
   /**
    * Send push notification to user
@@ -73,6 +85,115 @@ export class NotificationsService {
       console.error('Error sending push notification:', error);
       return { sent: false, error: error.message };
     }
+  }
+
+  /**
+   * Admin broadcast: store an inbox notification for every selected user and
+   * send matching FCM pushes so tapping the push opens the notification inbox.
+   */
+  async sendAdminBroadcastNotification(
+    adminSecret: string | undefined,
+    data: {
+      userIds: string[];
+      type?: string;
+      title: string;
+      body: string;
+      imageUrl?: string;
+      productId?: string;
+      target?: string;
+    },
+  ) {
+    this.assertAdminSecret(adminSecret);
+
+    const title = data.title?.trim();
+    const body = data.body?.trim();
+    const userIds = [...new Set((data.userIds || []).filter(Boolean))];
+    const type = data.type === 'product' ? 'product' : 'broadcast';
+
+    if (!title || !body) {
+      throw new BadRequestException('Title and body are required');
+    }
+    if (userIds.length === 0) {
+      throw new BadRequestException('No users matched this broadcast');
+    }
+
+    const client = this.supabaseService.getClient();
+    const notificationRows = userIds.map((userId) => ({
+      user_id: userId,
+      type,
+      title,
+      body,
+      actor_username: 'WhapVibez',
+      post_thumbnail: data.imageUrl || null,
+      data: {
+        type,
+        route: 'notifications',
+        target: data.target || 'all',
+        ...(data.productId ? { productId: data.productId, product_id: data.productId } : {}),
+        ...(data.imageUrl ? { imageUrl: data.imageUrl } : {}),
+      },
+      is_read: false,
+    }));
+
+    let storedCount = 0;
+    for (let i = 0; i < notificationRows.length; i += 500) {
+      const batch = notificationRows.slice(i, i + 500);
+      const { error } = await client.from('notifications').insert(batch);
+      if (error) {
+        console.error('Error storing admin broadcast notifications:', error);
+        throw error;
+      }
+      storedCount += batch.length;
+    }
+
+    const allTokens: string[] = [];
+    for (let i = 0; i < userIds.length; i += 100) {
+      const batchIds = userIds.slice(i, i + 100);
+      const tokenBatches = await Promise.all(
+        batchIds.map((userId) => this.authService.getFcmTokens(userId)),
+      );
+      for (const tokens of tokenBatches) {
+        allTokens.push(...tokens);
+      }
+    }
+
+    const uniqueTokens = [...new Set(allTokens)].filter(Boolean);
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < uniqueTokens.length; i += 500) {
+      const tokens = uniqueTokens.slice(i, i + 500);
+      try {
+        const response = await this.firebaseService.sendMulticastNotification({
+          tokens,
+          title,
+          body,
+          imageUrl: data.imageUrl,
+          data: {
+            type,
+            route: 'notifications',
+            target: data.target || 'all',
+            title,
+            body,
+            ...(data.productId ? { productId: data.productId, product_id: data.productId } : {}),
+            ...(data.imageUrl ? { imageUrl: data.imageUrl } : {}),
+          },
+        });
+        successCount += response.successCount;
+        failureCount += response.failureCount;
+      } catch (error) {
+        failureCount += tokens.length;
+        console.error('Error sending admin broadcast FCM batch:', error);
+      }
+    }
+
+    return {
+      recipients: userIds.length,
+      stored: storedCount,
+      tokens: uniqueTokens.length,
+      successCount,
+      failureCount,
+    };
   }
 
   /**
