@@ -314,9 +314,23 @@ export class SupabaseService implements OnModuleInit {
     const visibleMemberships = (memberships || []).filter(
       (membership: any) => !bannedIds.has(membership.community_id),
     );
-    const communityIds = visibleMemberships.map(
+    const membershipIds = visibleMemberships.map(
       (membership: any) => membership.community_id,
     );
+    const membershipIdSet = new Set(membershipIds);
+
+    const { data: ownedCommunities, error: ownedError } = await this.client
+      .from("communities")
+      .select("*")
+      .eq("creator_id", userId);
+
+    if (ownedError) throw ownedError;
+
+    const visibleOwnedCommunities = (ownedCommunities || []).filter(
+      (community: any) => !bannedIds.has(community.id),
+    );
+    const ownedIds = visibleOwnedCommunities.map((community: any) => community.id);
+    const communityIds = Array.from(new Set([...membershipIds, ...ownedIds]));
 
     if (communityIds.length === 0) {
       return [];
@@ -332,8 +346,22 @@ export class SupabaseService implements OnModuleInit {
     const communityMap = new Map(
       (communities || []).map((community: any) => [community.id, community]),
     );
+    for (const community of visibleOwnedCommunities) {
+      communityMap.set(community.id, community);
+    }
 
-    return visibleMemberships
+    const membershipRows = [
+      ...visibleMemberships,
+      ...visibleOwnedCommunities
+        .filter((community: any) => !membershipIdSet.has(community.id))
+        .map((community: any) => ({
+          community_id: community.id,
+          role: "admin",
+          joined_at: community.created_at,
+        })),
+    ];
+
+    return membershipRows
       .map((membership: any) => {
         const community = communityMap.get(membership.community_id);
         if (!community) return null;
@@ -367,7 +395,14 @@ export class SupabaseService implements OnModuleInit {
       .eq("community_id", communityId)
       .eq("user_id", userId)
       .maybeSingle();
-    return !!data;
+    if (data) return true;
+
+    const { data: community } = await this.client
+      .from("communities")
+      .select("creator_id")
+      .eq("id", communityId)
+      .maybeSingle();
+    return community?.creator_id === userId;
   }
 
   async getCommunityMembers(
