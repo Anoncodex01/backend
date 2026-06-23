@@ -24,7 +24,7 @@ export class AdminService {
       cronLogs,
     ] = await Promise.all([
       client.from('users').select('id', { count: 'exact', head: true }),
-      client.from('coin_wallets').select('id', { count: 'exact', head: true }),
+      client.from('coin_wallets').select('user_id', { count: 'exact', head: true }),
       client.from('payment_intents').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       client.from('payment_intents').select('id', { count: 'exact', head: true }).eq('status', 'completed'),
       client.from('payment_intents').select('id', { count: 'exact', head: true }).eq('status', 'failed'),
