@@ -201,7 +201,8 @@ export class SupabaseService implements OnModuleInit {
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", followerIds);
+        .in("id", followerIds)
+        .eq("is_frozen", false);
       return users || [];
     }
     return [];
@@ -221,7 +222,8 @@ export class SupabaseService implements OnModuleInit {
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", followingIds);
+        .in("id", followingIds)
+        .eq("is_frozen", false);
       return users || [];
     }
     return [];
@@ -234,6 +236,7 @@ export class SupabaseService implements OnModuleInit {
       .from("users")
       .select("id, username, full_name, profile_image_url, is_verified")
       .or(`username.ilike.%${query}%,full_name.ilike.%${query}%`)
+      .eq("is_frozen", false)
       .range(offset, offset + limit - 1);
 
     if (error) throw error;
@@ -267,12 +270,15 @@ export class SupabaseService implements OnModuleInit {
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", userIds);
+        .in("id", userIds)
+        .eq("is_frozen", false);
       const userMap = new Map((users || []).map((u) => [u.id, u]));
-      return normalizedData.map((post) => ({
-        ...post,
-        user: userMap.get(post.user_id) || null,
-      }));
+      return normalizedData
+        .filter((post) => userMap.has(post.user_id))
+        .map((post) => ({
+          ...post,
+          user: userMap.get(post.user_id) || null,
+        }));
     }
     return data || [];
   }
@@ -284,6 +290,7 @@ export class SupabaseService implements OnModuleInit {
       .from("communities")
       .select("*")
       .eq("is_public", true)
+      .eq("is_hidden", false)
       .order("members_count", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -450,7 +457,8 @@ export class SupabaseService implements OnModuleInit {
     const { data: users, error: usersError } = await this.client
       .from("users")
       .select("id, username, full_name, profile_image_url, is_verified")
-      .in("id", userIds);
+      .in("id", userIds)
+      .eq("is_frozen", false);
 
     if (usersError) throw usersError;
 
@@ -557,6 +565,61 @@ export class SupabaseService implements OnModuleInit {
     return normalized;
   }
 
+  private diversifyByCreator(posts: any[], limit: number) {
+    const buckets = new Map<string, any[]>();
+    const creatorOrder: string[] = [];
+    const usedPostIds = new Set<string>();
+
+    for (const post of posts) {
+      const postId = post?.id?.toString();
+      const creatorId = post?.user_id?.toString() || "unknown";
+      if (!postId || usedPostIds.has(postId)) continue;
+      usedPostIds.add(postId);
+
+      if (!buckets.has(creatorId)) {
+        buckets.set(creatorId, []);
+        creatorOrder.push(creatorId);
+      }
+      buckets.get(creatorId)!.push(post);
+    }
+
+    const diversified: any[] = [];
+    let previousCreatorId: string | null = null;
+
+    while (diversified.length < limit && buckets.size > 0) {
+      let pickedCreatorId: string | null = null;
+
+      for (const creatorId of creatorOrder) {
+        const bucket = buckets.get(creatorId);
+        if (!bucket || bucket.length === 0) continue;
+        if (creatorId === previousCreatorId && buckets.size > 1) continue;
+        pickedCreatorId = creatorId;
+        break;
+      }
+
+      if (!pickedCreatorId) {
+        pickedCreatorId = creatorOrder.find((creatorId) => {
+          const bucket = buckets.get(creatorId);
+          return bucket && bucket.length > 0;
+        }) || null;
+      }
+
+      if (!pickedCreatorId) break;
+
+      const pickedBucket = buckets.get(pickedCreatorId);
+      const post = pickedBucket?.shift();
+      if (post) {
+        diversified.push(post);
+        previousCreatorId = pickedCreatorId;
+      }
+      if (!pickedBucket || pickedBucket.length === 0) {
+        buckets.delete(pickedCreatorId);
+      }
+    }
+
+    return diversified;
+  }
+
   async getPosts(options: {
     limit?: number;
     offset?: number;
@@ -598,12 +661,15 @@ export class SupabaseService implements OnModuleInit {
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", userIds);
+        .in("id", userIds)
+        .eq("is_frozen", false);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return normalizedData.map((post: any) => ({
-        ...post,
-        user: userMap.get(post.user_id) || null,
-      }));
+      return normalizedData
+        .filter((post: any) => userMap.has(post.user_id))
+        .map((post: any) => ({
+          ...post,
+          user: userMap.get(post.user_id) || null,
+        }));
     }
     return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
@@ -703,12 +769,15 @@ export class SupabaseService implements OnModuleInit {
     const { data: users } = await this.client
       .from("users")
       .select("id, username, full_name, profile_image_url, is_verified")
-      .in("id", userIds);
+      .in("id", userIds)
+      .eq("is_frozen", false);
     const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-    return normalizedData.map((post: any) => ({
-      ...post,
-      user: userMap.get(post.user_id) || null,
-    }));
+    return normalizedData
+      .filter((post: any) => userMap.has(post.user_id))
+      .map((post: any) => ({
+        ...post,
+        user: userMap.get(post.user_id) || null,
+      }));
   }
 
   /**
@@ -720,6 +789,7 @@ export class SupabaseService implements OnModuleInit {
     cursor?: string,
     createdAfter?: string,
   ) {
+    const poolLimit = Math.min(Math.max(limit * 5, limit + 30), 120);
     let query = this.client
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
@@ -740,30 +810,36 @@ export class SupabaseService implements OnModuleInit {
       .order("id", { ascending: false });
 
     if (createdAfter) {
-      query = query.gt("created_at", createdAfter).limit(limit);
+      query = query.gt("created_at", createdAfter).limit(poolLimit);
     } else if (cursor) {
-      query = query.lt("created_at", cursor).limit(limit);
+      query = query.lt("created_at", cursor).limit(poolLimit);
     } else {
-      query = query.range(offset, offset + limit - 1);
+      query = query.range(offset, offset + poolLimit - 1);
     }
 
     const { data, error } = await query;
     if (error) throw error;
 
     if (data && data.length > 0) {
-      const normalizedData = data.map((post: any) =>
+      const feedCursor = data[data.length - 1]?.created_at;
+      const diversifiedData = this.diversifyByCreator(data, limit);
+      const normalizedData = diversifiedData.map((post: any) =>
         this.normalizePostMedia(post),
       );
-      const userIds = [...new Set(data.map((p: any) => p.user_id))];
+      const userIds = [...new Set(diversifiedData.map((p: any) => p.user_id))];
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", userIds);
+        .in("id", userIds)
+        .eq("is_frozen", false);
       const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return normalizedData.map((post: any) => ({
-        ...post,
-        user: userMap.get(post.user_id) || null,
-      }));
+      return normalizedData
+        .filter((post: any) => userMap.has(post.user_id))
+        .map((post: any) => ({
+          ...post,
+          _feed_cursor: feedCursor,
+          user: userMap.get(post.user_id) || null,
+        }));
     }
     return (data || []).map((post: any) => this.normalizePostMedia(post));
   }
@@ -861,13 +937,16 @@ export class SupabaseService implements OnModuleInit {
     const { data: users } = await this.client
       .from("users")
       .select("id, username, full_name, profile_image_url, is_verified")
-      .in("id", userIds);
+      .in("id", userIds)
+      .eq("is_frozen", false);
     const userMap = new Map((users || []).map((u: any) => [u.id, u]));
 
-    return normalizedData.map((post: any) => ({
-      ...post,
-      user: userMap.get(post.user_id) || null,
-    }));
+    return normalizedData
+      .filter((post: any) => userMap.has(post.user_id))
+      .map((post: any) => ({
+        ...post,
+        user: userMap.get(post.user_id) || null,
+      }));
   }
 
   // ===== Like/Save Status =====
@@ -964,13 +1043,16 @@ export class SupabaseService implements OnModuleInit {
       const { data: users } = await this.client
         .from("users")
         .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", userIds);
+        .in("id", userIds)
+        .eq("is_frozen", false);
 
       const userMap = new Map((users || []).map((u) => [u.id, u]));
-      return data.map((post) => ({
-        ...post,
-        user: userMap.get(post.user_id) || null,
-      }));
+      return data
+        .filter((post) => userMap.has(post.user_id))
+        .map((post) => ({
+          ...post,
+          user: userMap.get(post.user_id) || null,
+        }));
     }
 
     return data;
@@ -1149,13 +1231,16 @@ export class SupabaseService implements OnModuleInit {
         const { data: hosts } = await this.client
           .from("users")
           .select("id, username, full_name, profile_image_url, is_verified")
-          .in("id", hostIds);
+          .in("id", hostIds)
+          .eq("is_frozen", false);
 
         const hostMap = new Map((hosts || []).map((h) => [h.id, h]));
-        return data.map((session) => ({
-          ...session,
-          host: hostMap.get(session.host_id) || null,
-        }));
+        return data
+          .filter((session) => hostMap.has(session.host_id))
+          .map((session) => ({
+            ...session,
+            host: hostMap.get(session.host_id) || null,
+          }));
       }
     }
 

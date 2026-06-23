@@ -184,7 +184,7 @@ export class FeedController {
       ? [...posts].reverse().find((post: any) => post?._feed_source !== 'trending_gem')
       : posts[posts.length - 1];
     const nextCursor = posts.length >= safeLimit && cursorPost
-      ? (cursorPost as any).created_at
+      ? ((cursorPost as any)._feed_cursor || (cursorPost as any).created_at)
       : undefined;
 
     return {

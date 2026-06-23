@@ -623,21 +623,6 @@ export class PaymentsService {
           .update({ is_verified: true })
           .eq("id", userId);
         await this.invalidateUserVerificationCaches(userId);
-      } else {
-        // Only revoke the badge if the user has subscription history.
-        // This prevents resetting is_verified on brand-new accounts that were
-        // briefly set to true by the old email-confirmation trigger.
-        const { count } = await client
-          .from("user_verification_subscriptions")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId);
-        if (count && count > 0) {
-          await client
-            .from("users")
-            .update({ is_verified: false })
-            .eq("id", userId);
-          await this.invalidateUserVerificationCaches(userId);
-        }
       }
     } catch {
       // Don't fail status endpoint if profile sync fails
@@ -1327,8 +1312,7 @@ export class PaymentsService {
   private async syncUserVerificationFlag(userId: string) {
     const client = this.supabase.getClient();
     const nowIso = new Date().toISOString();
-    const [{ data: activeSub }, { data: latestKyc }, { count: subCount }] =
-      await Promise.all([
+    const [{ data: activeSub }, { data: latestKyc }] = await Promise.all([
         client
           .from("user_verification_subscriptions")
           .select("id")
@@ -1344,19 +1328,16 @@ export class PaymentsService {
           .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle(),
-        client
-          .from("user_verification_subscriptions")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", userId),
       ]);
     const kycApproved = latestKyc?.status === "approved";
     const shouldBeVerified = !!activeSub && kycApproved;
-    // Users with no subscription history at all were verified directly by an admin.
-    // Only an explicit admin "unverify" action should remove their badge.
-    if (!shouldBeVerified && (!subCount || subCount === 0)) return;
+    // Automatic status/cron sync may grant verification, but must never remove
+    // a badge. Admin/manual badges should remain until an explicit admin
+    // unverify/reject action changes users.is_verified to false.
+    if (!shouldBeVerified) return;
     await client
       .from("users")
-      .update({ is_verified: shouldBeVerified })
+      .update({ is_verified: true })
       .eq("id", userId);
     await this.invalidateUserVerificationCaches(userId);
   }
@@ -1892,8 +1873,114 @@ export class PaymentsService {
           }
         }
       }
+
+      await this.expireStalePendingOrders(cutoff, safeTimeoutMinutes);
     } catch (e: any) {
       this.logger.error("Error in expireStalePayments:", e.message);
+    }
+  }
+
+  private async expireStalePendingOrders(
+    cutoff: string,
+    timeoutMinutes: number,
+  ) {
+    const client = this.supabase.getClient();
+    const { data: staleOrders, error } = await client
+      .from("orders")
+      .select("id, created_at")
+      .eq("status", "pending")
+      .lt("created_at", cutoff)
+      .order("created_at", { ascending: true })
+      .limit(50);
+
+    if (error) {
+      this.logger.error("Error fetching stale pending orders:", error);
+      return;
+    }
+
+    if (!staleOrders || staleOrders.length === 0) {
+      return;
+    }
+
+    let cancelled = 0;
+    let repairedPaid = 0;
+    for (const order of staleOrders) {
+      try {
+        const orderId = (order as any)?.id;
+        if (!orderId) continue;
+
+        const { data: intents, error: intentError } = await client
+          .from("payment_intents")
+          .select("reference, status, metadata")
+          .contains("metadata", { order_id: orderId })
+          .order("created_at", { ascending: false })
+          .limit(10);
+
+        if (intentError) {
+          this.logger.warn(
+            `Failed to inspect payment intents for stale order ${orderId}: ${intentError.message}`,
+          );
+          continue;
+        }
+
+        const hasCompletedPayment = (intents || []).some((intent: any) =>
+          ["completed", "success", "paid"].includes(
+            (intent?.status || "").toString().toLowerCase(),
+          ),
+        );
+
+        if (hasCompletedPayment) {
+          await client
+            .from("orders")
+            .update({
+              status: "processing",
+              payment_issue: false,
+              payment_issue_reason: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", orderId)
+            .eq("status", "pending");
+          repairedPaid++;
+          continue;
+        }
+
+        if ((intents || []).length > 0) {
+          await client
+            .from("payment_intents")
+            .update({
+              status: "expired",
+              updated_at: new Date().toISOString(),
+            })
+            .contains("metadata", { order_id: orderId })
+            .in("status", ["pending", "processing"]);
+        }
+
+        await this.markOrderAsUnpaidAndCancel(
+          orderId,
+          "payment_expired_timeout",
+        );
+        cancelled++;
+      } catch (e: any) {
+        this.logger.warn(
+          `Failed to expire stale pending order ${(order as any)?.id}: ${e?.message || e}`,
+        );
+      }
+    }
+
+    if (cancelled > 0 || repairedPaid > 0) {
+      this.logger.log(
+        `⏱️ Stale order cleanup: ${cancelled} cancelled, ${repairedPaid} repaired as paid (timeout ${timeoutMinutes}m)`,
+      );
+      await this.logAdminEvent({
+        category: "cron",
+        message: "expireStalePendingOrders",
+        metadata: {
+          cancelled,
+          repairedPaid,
+          cutoff,
+          timeoutMinutes,
+        },
+      });
     }
   }
 

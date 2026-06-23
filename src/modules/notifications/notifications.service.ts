@@ -108,7 +108,11 @@ export class NotificationsService {
     const title = data.title?.trim();
     const body = data.body?.trim();
     const userIds = [...new Set((data.userIds || []).filter(Boolean))];
-    const type = data.type === 'product' ? 'product' : 'broadcast';
+    const payloadType = data.type === 'product' ? 'product' : 'broadcast';
+    // The production notifications table still has a strict CHECK constraint
+    // for the `type` column. Store admin announcements as `system` inbox rows
+    // while preserving the real kind in `data.type` and the push payload.
+    const storedType = 'system';
 
     if (!title || !body) {
       throw new BadRequestException('Title and body are required');
@@ -120,13 +124,13 @@ export class NotificationsService {
     const client = this.supabaseService.getClient();
     const notificationRows = userIds.map((userId) => ({
       user_id: userId,
-      type,
+      type: storedType,
       title,
       body,
       actor_username: 'WhapVibez',
       post_thumbnail: data.imageUrl || null,
       data: {
-        type,
+        type: payloadType,
         route: 'notifications',
         target: data.target || 'all',
         ...(data.productId ? { productId: data.productId, product_id: data.productId } : {}),
@@ -170,7 +174,7 @@ export class NotificationsService {
           body,
           imageUrl: data.imageUrl,
           data: {
-            type,
+            type: payloadType,
             route: 'notifications',
             target: data.target || 'all',
             title,

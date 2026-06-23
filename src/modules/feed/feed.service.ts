@@ -217,7 +217,7 @@ export class FeedService {
     const isFirstPage = !cursor && offset === 0 && !createdAfter;
     const cacheKey = mode === 'old_gems'
       ? `feed:reels:old_gems:page1:${limit}`
-      : `feed:reels:page1:${limit}`;
+      : `feed:reels:v2:page1:${limit}`;
 
     let posts: any[] | null = null;
     if (isFirstPage && !fresh) {
