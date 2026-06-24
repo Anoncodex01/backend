@@ -1303,6 +1303,27 @@ export class SupabaseService implements OnModuleInit {
     if (error) throw error;
   }
 
+  async endLiveSessionByChannel(channelName: string) {
+    const { error } = await this.client
+      .from("live_sessions")
+      .update({ status: "ended", ended_at: new Date().toISOString() })
+      .eq("channel_name", channelName)
+      .eq("status", "live");
+    if (error) throw error;
+  }
+
+  async endStaleSupabaseLiveSessions(olderThanMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const { data, error } = await this.client
+      .from("live_sessions")
+      .update({ status: "ended", ended_at: new Date().toISOString() })
+      .eq("status", "live")
+      .lt("created_at", cutoff)
+      .select("id");
+    if (error) throw error;
+    return (data || []).length;
+  }
+
   // ===== Comment Operations =====
 
   async getBlockedUserIds(userId: string): Promise<string[]> {

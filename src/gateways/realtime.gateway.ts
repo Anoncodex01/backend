@@ -12,6 +12,7 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../core/redis/redis.service';
 import { LiveService } from '../modules/live/live.service';
+import { FirebaseService } from '../core/firebase/firebase.service';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -34,6 +35,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private configService: ConfigService,
     private redisService: RedisService,
     private liveService: LiveService,
+    private firebaseService: FirebaseService,
   ) {}
 
   /**
@@ -265,6 +267,39 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
 
     return { success: true, onlineStatus };
+  }
+
+  /**
+   * Host heartbeat to keep live session alive in Firestore
+   */
+  @SubscribeMessage('host_heartbeat')
+  async handleHostHeartbeat(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { liveId: string; channelName: string },
+  ) {
+    if (!client.userId) return { success: false };
+    try {
+      const firestore = this.firebaseService.getFirestore();
+      const snapshot = await firestore
+        .collection('live_sessions')
+        .where('agoraChannel', '==', data.channelName)
+        .limit(1)
+        .get();
+      if (!snapshot.empty) {
+        await snapshot.docs[0].ref.set(
+          { hostLastSeenAt: new Date(), hostOnline: true },
+          { merge: true },
+        );
+      }
+      await this.redisService.set(
+        'live:heartbeat:' + data.liveId,
+        Date.now().toString(),
+        300,
+      );
+    } catch {
+      // non-critical
+    }
+    return { success: true };
   }
 
   /**

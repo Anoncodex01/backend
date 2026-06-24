@@ -162,7 +162,15 @@ export class LiveService {
           );
           return true;
         });
-        if (didClean) cleaned++;
+        if (didClean) {
+          cleaned++;
+          const agoraChannel = doc.data()?.agoraChannel ?? doc.data()?.channelName;
+          if (agoraChannel) {
+            this.supabaseService.endLiveSessionByChannel(agoraChannel).catch((e) =>
+              this.logger.warn('Supabase sync failed for channel ' + agoraChannel + ': ' + e),
+            );
+          }
+        }
       }
 
       if (cleaned === 0) return;
@@ -170,6 +178,19 @@ export class LiveService {
       this.logger.warn(`Cleaned up ${cleaned} stale Firestore live session(s)`);
     } catch (error) {
       this.logger.warn(`Stale Firestore live cleanup skipped: ${error}`);
+    }
+  }
+
+  @Cron('0 */10 * * * *')
+  async cleanupStaleSupabaseLiveSessions() {
+    try {
+      const twoHours = 2 * 60 * 60 * 1000;
+      const ended = await this.supabaseService.endStaleSupabaseLiveSessions(twoHours);
+      if (ended > 0) {
+        this.logger.warn('Cleaned up ' + ended + ' stale Supabase live session(s)');
+      }
+    } catch (error) {
+      this.logger.warn('Supabase stale live cleanup failed: ' + error);
     }
   }
 
