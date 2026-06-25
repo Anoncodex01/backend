@@ -66,15 +66,23 @@ export class CommentsService {
     const offset = options.offset || 0;
     const cacheKey = `comments:${postId}:${offset}:${limit}`;
 
-    // Try to get from cache first
-    let comments = await this.redisService.getJson<any[]>(cacheKey);
+    // Try to get from cache first (Redis optional — fall back to DB if down).
+    let comments: any[] | null = null;
+    try {
+      comments = await this.redisService.getJson<any[]>(cacheKey);
+    } catch (error) {
+      console.warn(`Comments cache read failed for ${postId}:`, error);
+    }
 
     if (!comments) {
       // Cache miss - fetch from database
       comments = await this.fetchCommentsFromDb(postId, options);
-      
-      // Cache the result
-      await this.redisService.setJson(cacheKey, comments, this.commentsTtl);
+
+      try {
+        await this.redisService.setJson(cacheKey, comments, this.commentsTtl);
+      } catch (error) {
+        console.warn(`Comments cache write failed for ${postId}:`, error);
+      }
     } else {
       // Cache hit - refresh in background (don't await)
       this.refreshCommentsInBackground(postId, options, cacheKey).catch(err => {

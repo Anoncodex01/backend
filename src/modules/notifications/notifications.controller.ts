@@ -6,7 +6,7 @@ import {
   Headers,
 } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-import { ArrayNotEmpty, IsArray, IsObject, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsObject, IsOptional, IsString } from 'class-validator';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
@@ -74,10 +74,10 @@ export class MessageNotificationDto {
 }
 
 export class AdminBroadcastNotificationDto {
+  @IsOptional()
   @IsArray()
-  @ArrayNotEmpty()
   @IsString({ each: true })
-  userIds: string[];
+  userIds?: string[];
 
   @IsOptional()
   @IsString()
@@ -100,6 +100,10 @@ export class AdminBroadcastNotificationDto {
   @IsOptional()
   @IsString()
   target?: string;
+
+  @IsOptional()
+  @IsString()
+  userId?: string;
 }
 
 @Controller('notifications')

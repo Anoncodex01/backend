@@ -41,6 +41,112 @@ export class NotificationsService {
     }
   }
 
+  private async collectPagedRows<T>(
+    loadPage: (from: number, to: number) => Promise<{ data: T[] | null; error: unknown }>,
+  ): Promise<T[]> {
+    const rows: T[] = [];
+    const pageSize = 1000;
+
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const { data, error } = await loadPage(from, to);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+    }
+
+    return rows;
+  }
+
+  private async resolveBroadcastTargetUserIds(
+    target: string,
+    productId?: string,
+    userId?: string,
+  ): Promise<string[]> {
+    const client = this.supabaseService.getClient();
+    const normalizedTarget = (target || 'all').trim().toLowerCase();
+
+    if (normalizedTarget === 'single_user') {
+      if (!userId) return [];
+      const { data, error } = await client
+        .from('users')
+        .select('id')
+        .eq('id', userId)
+        .or('is_blocked.eq.false,is_blocked.is.null')
+        .maybeSingle();
+
+      if (error) throw error;
+      return data?.id ? [data.id] : [];
+    }
+
+    if (normalizedTarget === 'verified') {
+      const rows = await this.collectPagedRows<{ id: string }>((from, to) =>
+        client
+          .from('users')
+          .select('id')
+          .eq('is_verified', true)
+          .or('is_blocked.eq.false,is_blocked.is.null')
+          .range(from, to),
+      );
+      return rows.map((user) => user.id);
+    }
+
+    if (normalizedTarget === 'shop_owners') {
+      const rows = await this.collectPagedRows<{ user_id: string }>((from, to) =>
+        client
+          .from('shops')
+          .select('user_id')
+          .eq('is_active', true)
+          .range(from, to),
+      );
+      return [...new Set(rows.map((shop) => shop.user_id).filter(Boolean))];
+    }
+
+    if (normalizedTarget === 'creators') {
+      const rows = await this.collectPagedRows<{ user_id: string }>((from, to) =>
+        client
+          .from('posts')
+          .select('user_id')
+          .eq('is_draft', false)
+          .eq('is_public', true)
+          .range(from, to),
+      );
+      return [...new Set(rows.map((post) => post.user_id).filter(Boolean))];
+    }
+
+    if (normalizedTarget === 'product_customers' && productId) {
+      const rows = await this.collectPagedRows<{
+        orders?: { buyer_id?: string } | { buyer_id?: string }[] | null;
+      }>((from, to) =>
+        client
+          .from('order_items')
+          .select('orders(buyer_id)')
+          .eq('product_id', productId)
+          .range(from, to),
+      );
+
+      return [
+        ...new Set(
+          rows
+            .map((row) => {
+              const order = Array.isArray(row.orders) ? row.orders[0] : row.orders;
+              return order?.buyer_id;
+            })
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+    }
+
+    const rows = await this.collectPagedRows<{ id: string }>((from, to) =>
+      client
+        .from('users')
+        .select('id')
+        .or('is_blocked.eq.false,is_blocked.is.null')
+        .range(from, to),
+    );
+    return rows.map((user) => user.id);
+  }
+
   /**
    * Send push notification to user
    */
@@ -94,20 +200,29 @@ export class NotificationsService {
   async sendAdminBroadcastNotification(
     adminSecret: string | undefined,
     data: {
-      userIds: string[];
+      userIds?: string[];
       type?: string;
       title: string;
       body: string;
       imageUrl?: string;
       productId?: string;
       target?: string;
+      userId?: string;
     },
   ) {
     this.assertAdminSecret(adminSecret);
 
     const title = data.title?.trim();
     const body = data.body?.trim();
-    const userIds = [...new Set((data.userIds || []).filter(Boolean))];
+    let userIds = [...new Set((data.userIds || []).filter(Boolean))];
+
+    if (userIds.length === 0) {
+      userIds = await this.resolveBroadcastTargetUserIds(
+        data.target || 'all',
+        data.productId,
+        data.userId,
+      );
+    }
     const payloadType = data.type === 'product' ? 'product' : 'broadcast';
     // The production notifications table still has a strict CHECK constraint
     // for the `type` column. Store admin announcements as `system` inbox rows
@@ -349,11 +464,15 @@ export class NotificationsService {
     }
 
     const debounceKey = `notif_debounce:live_start:${data.liveId}`;
-    const wasRecentlySent = await this.redisService.exists(debounceKey);
-    if (wasRecentlySent) {
-      return { sent: false, reason: 'duplicate_live_start' };
+    try {
+      const wasRecentlySent = await this.redisService.exists(debounceKey);
+      if (wasRecentlySent) {
+        return { sent: false, reason: 'duplicate_live_start' };
+      }
+      await this.redisService.set(debounceKey, '1', 30 * 60);
+    } catch (error) {
+      console.warn('Live start debounce skipped (Redis unavailable):', error);
     }
-    await this.redisService.set(debounceKey, '1', 30 * 60);
 
     const client = this.supabaseService.getClient();
     const host = await this.supabaseService.getUser(data.hostId).catch(() => null);

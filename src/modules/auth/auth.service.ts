@@ -110,8 +110,8 @@ export class AuthService {
       await this.redisService.expire(key, 90 * 24 * 60 * 60); // 90 days
       console.log(`✅ Stored FCM token for user ${userId} device ${deviceId}`);
     } catch (e: any) {
+      // Push delivery degrades without Redis, but auth/session must not fail.
       console.error(`❌ Failed to store FCM token for ${userId}:`, e?.message || e);
-      throw e;
     }
   }
 
