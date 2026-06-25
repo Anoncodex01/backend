@@ -80,7 +80,7 @@ export class NotificationsService {
     }
 
     if (normalizedTarget === 'verified') {
-      const rows = await this.collectPagedRows<{ id: string }>((from, to) =>
+      const rows = await this.collectPagedRows<{ id: string }>(async (from, to) =>
         client
           .from('users')
           .select('id')
@@ -92,7 +92,7 @@ export class NotificationsService {
     }
 
     if (normalizedTarget === 'shop_owners') {
-      const rows = await this.collectPagedRows<{ user_id: string }>((from, to) =>
+      const rows = await this.collectPagedRows<{ user_id: string }>(async (from, to) =>
         client
           .from('shops')
           .select('user_id')
@@ -103,7 +103,7 @@ export class NotificationsService {
     }
 
     if (normalizedTarget === 'creators') {
-      const rows = await this.collectPagedRows<{ user_id: string }>((from, to) =>
+      const rows = await this.collectPagedRows<{ user_id: string }>(async (from, to) =>
         client
           .from('posts')
           .select('user_id')
@@ -117,7 +117,7 @@ export class NotificationsService {
     if (normalizedTarget === 'product_customers' && productId) {
       const rows = await this.collectPagedRows<{
         orders?: { buyer_id?: string } | { buyer_id?: string }[] | null;
-      }>((from, to) =>
+      }>(async (from, to) =>
         client
           .from('order_items')
           .select('orders(buyer_id)')
@@ -137,7 +137,7 @@ export class NotificationsService {
       ];
     }
 
-    const rows = await this.collectPagedRows<{ id: string }>((from, to) =>
+    const rows = await this.collectPagedRows<{ id: string }>(async (from, to) =>
       client
         .from('users')
         .select('id')
