@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Param, Body, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Param,
+  Body,
+  Headers,
+  UseGuards,
+  Logger,
+} from '@nestjs/common';
 import { IsString, IsBoolean, IsOptional } from 'class-validator';
 import { LiveService } from './live.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
@@ -23,8 +33,15 @@ class AudienceLiveTokenDto {
   channelName: string;
 }
 
+class AdminCommentsDto {
+  @IsBoolean()
+  commentsEnabled: boolean;
+}
+
 @Controller('live')
 export class LiveController {
+  private readonly logger = new Logger(LiveController.name);
+
   constructor(private liveService: LiveService) {}
 
   /**
@@ -39,6 +56,49 @@ export class LiveController {
       success: true,
       data: sessions,
     };
+  }
+
+  /**
+   * GET /v1/live/admin/active
+   * Admin: fresh list of active Agora lives
+   */
+  @Get('admin/active')
+  async adminActiveSessions(
+    @Headers('x-admin-secret') adminSecret: string | undefined,
+  ) {
+    const data = await this.liveService.adminListActiveLives(adminSecret);
+    return { success: true, data };
+  }
+
+  /**
+   * POST /v1/live/admin/:id/force-end
+   * Admin: force-end a live (Firestore + Supabase sync)
+   */
+  @Post('admin/:id/force-end')
+  async adminForceEnd(
+    @Param('id') liveId: string,
+    @Headers('x-admin-secret') adminSecret: string | undefined,
+  ) {
+    const data = await this.liveService.adminForceEndLive(adminSecret, liveId);
+    return { success: true, data };
+  }
+
+  /**
+   * PATCH /v1/live/admin/:id/comments
+   * Admin: enable/disable live comments
+   */
+  @Patch('admin/:id/comments')
+  async adminSetComments(
+    @Param('id') liveId: string,
+    @Body() dto: AdminCommentsDto,
+    @Headers('x-admin-secret') adminSecret: string | undefined,
+  ) {
+    const data = await this.liveService.adminSetCommentsEnabled(
+      adminSecret,
+      liveId,
+      dto.commentsEnabled,
+    );
+    return { success: true, data };
   }
 
   /**
@@ -66,10 +126,19 @@ export class LiveController {
   @Post('token')
   @UseGuards(AuthGuard)
   async getToken(@CurrentUser() userId: string, @Body() dto: LiveTokenDto) {
+    const rawIsHost = (dto as { isHost?: unknown }).isHost;
+    const isHost =
+      rawIsHost === true ||
+      (typeof rawIsHost === 'string' && rawIsHost.toLowerCase() === 'true');
+
+    this.logger.log(
+      `Agora token request channel=${dto.channelName} user=${userId} role=${isHost ? 'publisher' : 'subscriber'} rawIsHost=${rawIsHost}`,
+    );
+
     const result = await this.liveService.generateToken({
       channelName: dto.channelName,
       userId,
-      isHost: dto.isHost,
+      isHost,
     });
 
     return {

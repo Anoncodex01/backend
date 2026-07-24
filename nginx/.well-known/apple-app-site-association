@@ -1,0 +1,22 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "3DN73CY56R.com.whapvibez.app1",
+        "paths": [
+          "/v1/p/*",
+          "/v1/u/*",
+          "/v1/c/*",
+          "/v1/s/*",
+          "/v1/live/*",
+          "/live/*",
+          "/p/*",
+          "/u/*",
+          "/c/*",
+          "/s/*"
+        ]
+      }
+    ]
+  }
+}

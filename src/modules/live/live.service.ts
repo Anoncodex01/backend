@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import * as admin from 'firebase-admin';
 import { RedisService } from '../../core/redis/redis.service';
@@ -66,7 +68,52 @@ export class LiveService {
     private firebaseService: FirebaseService,
     private agoraService: AgoraService,
     private notificationsService: NotificationsService,
+    private configService: ConfigService,
   ) {}
+
+  private assertAdminSecret(secret?: string) {
+    const expected =
+      this.configService.get<string>('SUPPORT_ADMIN_SECRET', '') ||
+      this.configService.get<string>('ADMIN_SECRET', '');
+
+    if (!expected || secret !== expected) {
+      throw new ForbiddenException('Invalid admin secret');
+    }
+  }
+
+  private async clearActiveSessionsCache() {
+    try {
+      await this.redisService.del('live:active_sessions');
+    } catch {
+      // ignore cache clear failures
+    }
+  }
+
+  private mapFirestoreLiveDoc(doc: admin.firestore.QueryDocumentSnapshot) {
+    const data = doc.data();
+    const startedAt =
+      data.startedAt?.toDate?.()?.toISOString?.() ?? data.startedAt ?? null;
+    const hostLastSeenAt =
+      data.hostLastSeenAt?.toDate?.()?.toISOString?.() ??
+      data.hostLastSeenAt ??
+      null;
+    const referenceTime = hostLastSeenAt
+      ? new Date(hostLastSeenAt).getTime()
+      : startedAt
+        ? new Date(startedAt).getTime()
+        : null;
+    const timeoutMs = data.mode === 'voice' ? 300_000 : this.staleHostTimeoutMs;
+    const isStale =
+      referenceTime != null && Date.now() - referenceTime > timeoutMs;
+
+    return {
+      id: doc.id,
+      ...data,
+      startedAt,
+      hostLastSeenAt,
+      isStale,
+    };
+  }
 
   private normalizeText(value: string) {
     return value
@@ -389,16 +436,7 @@ export class LiveService {
             .limit(20)
             .get();
 
-          return snapshot.docs.map((doc) => {
-            const data = doc.data();
-            return {
-              id: doc.id,
-              ...data,
-              startedAt: data.startedAt?.toDate?.()?.toISOString?.() ?? data.startedAt ?? null,
-              hostLastSeenAt:
-                data.hostLastSeenAt?.toDate?.()?.toISOString?.() ?? data.hostLastSeenAt ?? null,
-            };
-          });
+          return snapshot.docs.map((doc) => this.mapFirestoreLiveDoc(doc));
         } catch (firestoreError) {
           this.logger.warn(
             `Firestore live session probe failed, falling back to Supabase: ${firestoreError}`,
@@ -430,11 +468,15 @@ export class LiveService {
     userId: string;
     isHost: boolean;
   }) {
+    const isHost = data.isHost === true;
     // Cache key is unique per user + channel + role so UIDs never collide.
     // TTL is 5 min less than the Agora token expiry so we never serve an
     // already-expired token from cache.
-    const cacheKey = `live:token:${data.channelName}:${data.userId}:${data.isHost ? 'h' : 'v'}`;
-    const cacheTtl = data.isHost ? 82800 : 6300; // 23 h for host, 105 min for viewer
+    // v2 intentionally bypasses older cached tokens that may have been issued
+    // before host/co-host role handling was corrected.
+    const cacheRole = isHost ? 'publisher' : 'subscriber';
+    const cacheKey = `live:token:v2:${data.channelName}:${data.userId}:${cacheRole}`;
+    const cacheTtl = isHost ? 82800 : 6300; // 23 h for host, 105 min for viewer
 
     // --- Cache read ---
     try {
@@ -446,7 +488,7 @@ export class LiveService {
       }>(cacheKey);
       if (cached) {
         this.logger.debug(
-          `⚡ Token cache hit: ${data.channelName} (isHost: ${data.isHost})`,
+          `⚡ Token cache hit: ${data.channelName} (role: ${cacheRole})`,
         );
         return cached;
       }
@@ -456,8 +498,8 @@ export class LiveService {
 
     // --- Generate ---
     try {
-      const role = data.isHost ? 'publisher' : 'subscriber';
-      const expirationSeconds = data.isHost ? 86400 : 7200;
+      const role = isHost ? 'publisher' : 'subscriber';
+      const expirationSeconds = isHost ? 86400 : 7200;
       const agoraUid = this.buildAgoraUid(data.userId);
 
       const token = this.agoraService.generateRtcToken(
@@ -472,6 +514,7 @@ export class LiveService {
         uid: agoraUid,
         appId: this.agoraService.getAppId(),
         channelName: data.channelName,
+        role,
       };
 
       // --- Cache write (non-critical) ---
@@ -482,7 +525,7 @@ export class LiveService {
       }
 
       this.logger.log(
-        `✅ Token generated: ${data.channelName} (isHost: ${data.isHost}, uid: ${agoraUid})`,
+        `✅ Token generated: ${data.channelName} (role: ${role}, uid: ${agoraUid})`,
       );
       return result;
     } catch (error) {
@@ -525,5 +568,134 @@ export class LiveService {
       viewerCount: state.viewerCount,
       heartCount: state.heartCount,
     });
+  }
+
+  /**
+   * Admin: list active lives (fresh Firestore read, no cache).
+   */
+  async adminListActiveLives(secret?: string) {
+    this.assertAdminSecret(secret);
+
+    try {
+      const firestore = this.firebaseService.getFirestore();
+      const snapshot = await firestore
+        .collection('live_sessions')
+        .where('isLive', '==', true)
+        .where('endedAt', '==', null)
+        .limit(100)
+        .get();
+
+      const sessions = snapshot.docs.map((doc) => this.mapFirestoreLiveDoc(doc));
+      sessions.sort((a, b) => {
+        const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
+        const bTime = b.startedAt ? new Date(b.startedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+
+      return {
+        sessions,
+        activeCount: sessions.length,
+        staleCount: sessions.filter((s) => s.isStale).length,
+      };
+    } catch (firestoreError) {
+      this.logger.warn(
+        `Admin Firestore live list failed, falling back to Supabase: ${firestoreError}`,
+      );
+      const sessions = await this.supabaseService.getLiveSessions(100);
+      return {
+        sessions,
+        activeCount: sessions.length,
+        staleCount: 0,
+      };
+    }
+  }
+
+  /**
+   * Admin: force-end a live session (Firestore source of truth).
+   */
+  async adminForceEndLive(secret: string | undefined, liveId: string) {
+    this.assertAdminSecret(secret);
+    if (!liveId?.trim()) {
+      throw new BadRequestException('liveId is required');
+    }
+
+    const firestore = this.firebaseService.getFirestore();
+    const ref = firestore.collection('live_sessions').doc(liveId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new NotFoundException('Live session not found');
+    }
+
+    const data = snap.data() || {};
+    await ref.set(
+      {
+        isLive: false,
+        hostOnline: false,
+        endedAt: admin.firestore.FieldValue.serverTimestamp(),
+        endedReason: 'ended_by_admin',
+        viewerCount: 0,
+      },
+      { merge: true },
+    );
+
+    const agoraChannel =
+      (data.agoraChannel as string | undefined) ||
+      (data.channelName as string | undefined) ||
+      `live_${liveId}`;
+
+    try {
+      await this.supabaseService.endLiveSessionByChannel(agoraChannel);
+    } catch (e) {
+      this.logger.warn(
+        `Supabase sync failed while admin force-ending ${liveId}: ${e}`,
+      );
+    }
+
+    try {
+      await this.redisService.del(`live:${liveId}:viewers`);
+      await this.redisService.del(`live:${liveId}:hearts`);
+      await this.redisService.del(`live:${liveId}:viewer_set`);
+      await this.redisService.del(`live:${liveId}:info`);
+    } catch {
+      // ignore redis cleanup failures
+    }
+
+    await this.clearActiveSessionsCache();
+
+    this.logger.warn(`Admin force-ended live session ${liveId}`);
+    return {
+      id: liveId,
+      agoraChannel,
+      endedReason: 'ended_by_admin',
+    };
+  }
+
+  /**
+   * Admin: enable/disable comments on an active live.
+   */
+  async adminSetCommentsEnabled(
+    secret: string | undefined,
+    liveId: string,
+    commentsEnabled: boolean,
+  ) {
+    this.assertAdminSecret(secret);
+    if (!liveId?.trim()) {
+      throw new BadRequestException('liveId is required');
+    }
+
+    const firestore = this.firebaseService.getFirestore();
+    const ref = firestore.collection('live_sessions').doc(liveId);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new NotFoundException('Live session not found');
+    }
+
+    await ref.set({ commentsEnabled: !!commentsEnabled }, { merge: true });
+    await this.clearActiveSessionsCache();
+
+    return {
+      id: liveId,
+      commentsEnabled: !!commentsEnabled,
+    };
   }
 }
