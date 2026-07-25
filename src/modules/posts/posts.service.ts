@@ -108,4 +108,70 @@ export class PostsService {
 
     return false;
   }
+
+  /**
+   * Create a TUS resumable upload slot on Cloudflare Stream.
+   * Returns the TUS upload URL and the stream UID.
+   * The Flutter client then PATCHes chunks directly to Cloudflare.
+   */
+  async getTusUploadUrl(
+    fileSizeBytes: number,
+    maxDurationSeconds = 300,
+  ): Promise<{ tusUrl: string; uid: string }> {
+    if (!this.accountId || !this.apiToken) {
+      this.logger.error('Cloudflare Stream credentials are missing');
+      throw new InternalServerErrorException('Cloudflare upload is not configured');
+    }
+
+    const safeMax = Math.min(Math.max(Math.ceil(maxDurationSeconds || 300), 1), 3600);
+    // TUS metadata values must be base64-encoded
+    const maxDurB64 = Buffer.from(safeMax.toString()).toString('base64');
+    const nameB64 = Buffer.from('WhapVibez Upload').toString('base64');
+
+    const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/stream?direct_user=true`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiToken}`,
+          'Tus-Resumable': '1.0.0',
+          'Upload-Length': fileSizeBytes.toString(),
+          'Upload-Metadata': `maxDurationSeconds ${maxDurB64},name ${nameB64}`,
+        },
+        signal: controller.signal,
+        // TUS creation POST has no body
+        body: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Cloudflare TUS creation failed: ${message}`);
+      throw new BadGatewayException('Cloudflare TUS service unavailable');
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!res.ok) {
+      const body = await res.text();
+      this.logger.error(`Cloudflare TUS rejected: status=${res.status} body=${body.slice(0, 500)}`);
+      throw new BadGatewayException('Failed to create TUS upload slot');
+    }
+
+    const tusUrl = res.headers.get('Location');
+    if (!tusUrl) {
+      this.logger.error('Cloudflare TUS response missing Location header');
+      throw new BadGatewayException('No TUS upload URL returned by Cloudflare');
+    }
+
+    // UID is the last path segment of the TUS URL
+    // e.g. https://upload.videodelivery.net/tus/abc123def456...
+    const uid = tusUrl.split('/').pop() ?? '';
+
+    this.logger.log(`TUS upload slot created: uid=${uid}`);
+    return { tusUrl, uid };
+  }
 }
