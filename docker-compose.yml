@@ -64,8 +64,10 @@ services:
 
 networks:
   whapvibez-network:
-    driver: bridge
+    external: true
+    name: backend_whapvibez-network
 
 volumes:
   redis-data:
-    driver: local
+    external: true
+    name: backend_redis-data

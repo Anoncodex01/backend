@@ -37,10 +37,19 @@ export const environment = {
     appCertificate: process.env.AGORA_APP_CERTIFICATE || '',
   },
 
-  // Cloudflare Stream
+  // Cloudflare Stream (legacy — kept for migration script)
   cloudflare: {
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
     apiToken: process.env.CLOUDFLARE_API_TOKEN || '',
+  },
+
+  // Cloudflare R2 (new video/image storage)
+  r2: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+    endpoint: process.env.R2_ENDPOINT || '',
+    bucket: process.env.R2_BUCKET || 'whapvibez-media',
+    cdnUrl: process.env.R2_CDN_URL || 'https://cdn.whapvibez.com',
   },
 
   // FCM

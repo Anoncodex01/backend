@@ -23,6 +23,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { SupportModule } from './modules/support/support.module';
 import { PostsModule } from './modules/posts/posts.module';
+import { MediaModule } from './modules/media/media.module';
 
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
@@ -65,6 +66,7 @@ import { LegalController } from './legal.controller';
     AdminModule,
     SupportModule,
     PostsModule,
+    MediaModule,
   ],
   controllers: [HealthController, LegalController],
   providers: [RealtimeGateway],
