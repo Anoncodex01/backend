@@ -632,7 +632,9 @@ export class SupabaseService implements OnModuleInit {
     let query = this.client
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
-      .eq("is_draft", false)
+      .eq("is_draft", false);
+    query = this.applyPlayableVideoFilter(query);
+    query = query
       .order(options.orderBy || "created_at", { ascending: false })
       .order("id", { ascending: false });
 
@@ -706,7 +708,9 @@ export class SupabaseService implements OnModuleInit {
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
       .eq("is_public", true)
-      .eq("is_draft", false)
+      .eq("is_draft", false);
+    query = this.applyPlayableVideoFilter(query);
+    query = query
       // Broad recency window: last 30 days for the scoring pool
       .gte(
         "created_at",
@@ -781,6 +785,14 @@ export class SupabaseService implements OnModuleInit {
   }
 
   /**
+   * Exclude in-flight / failed encodes from public feeds.
+   * Legacy Stream posts may have null processing_status.
+   */
+  private applyPlayableVideoFilter<T extends { or: (...args: any[]) => T }>(query: T): T {
+    return query.or('processing_status.is.null,processing_status.eq.completed');
+  }
+
+  /**
    * Get reels feed: mixed media posts (video + image, slim select, cursor pagination)
    */
   async getReelsPosts(
@@ -788,13 +800,22 @@ export class SupabaseService implements OnModuleInit {
     offset = 0,
     cursor?: string,
     createdAfter?: string,
+    options?: { storageType?: string },
   ) {
     const poolLimit = Math.min(Math.max(limit * 5, limit + 30), 120);
     let query = this.client
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
       .eq("is_public", true)
-      .eq("is_draft", false)
+      .eq("is_draft", false);
+    query = this.applyPlayableVideoFilter(query);
+    if (options?.storageType) {
+      query = query.eq("storage_type", options.storageType);
+      if (options.storageType === "r2") {
+        query = query.not("video_url", "is", null);
+      }
+    }
+    query = query
       // Reels supports both videos and image posts in the app.
       .or(
         [
@@ -849,7 +870,12 @@ export class SupabaseService implements OnModuleInit {
    * after every five old videos. This keeps nostalgia content focused while
    * still surfacing strong evergreen posts.
    */
-  async getOldGemsReelsPosts(limit = 20, offset = 0, cursor?: string) {
+  async getOldGemsReelsPosts(
+    limit = 20,
+    offset = 0,
+    cursor?: string,
+    options?: { storageType?: string },
+  ) {
     const oldCutoff = new Date(
       Date.now() - 30 * 24 * 60 * 60 * 1000,
     ).toISOString();
@@ -864,7 +890,15 @@ export class SupabaseService implements OnModuleInit {
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
       .eq("is_public", true)
-      .eq("is_draft", false)
+      .eq("is_draft", false);
+    oldQuery = this.applyPlayableVideoFilter(oldQuery);
+    if (options?.storageType) {
+      oldQuery = oldQuery.eq("storage_type", options.storageType);
+      if (options.storageType === "r2") {
+        oldQuery = oldQuery.not("video_url", "is", null);
+      }
+    }
+    oldQuery = oldQuery
       .or(videoFilter)
       .lte("created_at", oldCutoff)
       .order("created_at", { ascending: true })
@@ -883,11 +917,20 @@ export class SupabaseService implements OnModuleInit {
     // available videos so the page is still useful during launch.
     let oldPool = oldPosts || [];
     if (oldPool.length === 0 && !cursor) {
-      const { data: fallbackOld, error: fallbackError } = await this.client
-        .from("posts")
-        .select(SupabaseService.FEED_POST_SELECT)
-        .eq("is_public", true)
-        .eq("is_draft", false)
+      let fallbackQuery = this.applyPlayableVideoFilter(
+        this.client
+          .from("posts")
+          .select(SupabaseService.FEED_POST_SELECT)
+          .eq("is_public", true)
+          .eq("is_draft", false),
+      );
+      if (options?.storageType) {
+        fallbackQuery = fallbackQuery.eq("storage_type", options.storageType);
+        if (options.storageType === "r2") {
+          fallbackQuery = fallbackQuery.not("video_url", "is", null);
+        }
+      }
+      const { data: fallbackOld, error: fallbackError } = await fallbackQuery
         .or(videoFilter)
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
@@ -1027,12 +1070,14 @@ export class SupabaseService implements OnModuleInit {
     const followingIds = await this.getFollowingIds(userId);
     if (followingIds.length === 0) return [];
 
-    const { data, error } = await this.client
+    let query = this.client
       .from("posts")
       .select("*")
       .in("user_id", followingIds)
       .eq("is_public", true)
-      .eq("is_draft", false) // Exclude drafts
+      .eq("is_draft", false);
+    query = this.applyPlayableVideoFilter(query);
+    const { data, error } = await query
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 

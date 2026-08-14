@@ -14,6 +14,7 @@ services:
       - API_PREFIX=v1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - VIDEO_DISABLE_WORKER=1
     env_file:
       - .env
     depends_on:
@@ -26,6 +27,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # ===== Dedicated video encoding worker (FFmpeg + BullMQ) =====
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whapvibez-video-worker
+    restart: unless-stopped
+    command: ["node", "dist/worker/main.js"]
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - VIDEO_WORKER_ONLY=1
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - whapvibez-network
 
   # ===== Redis Cache =====
   redis:

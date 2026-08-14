@@ -1,20 +1,21 @@
-import { Controller, Get, Param, Req, Res } from '@nestjs/common';
+import { Controller, Get, Param, Req, Res, Optional } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { RedisService } from './core/redis/redis.service';
 import { SupabaseService } from './core/supabase/supabase.service';
+import { MediaService } from './modules/media/media.service';
 
 @Controller()
 export class HealthController {
   constructor(
     private redisService: RedisService,
     private supabaseService: SupabaseService,
+    @Optional() private mediaService?: MediaService,
   ) {}
 
   @Get('health')
   async healthCheck() {
-    const checks: Record<string, boolean> = {};
+    const checks: Record<string, boolean | object> = {};
 
-    // Check Redis
     try {
       await this.redisService.set('health_check', 'ok', 10);
       checks.redis = true;
@@ -22,7 +23,6 @@ export class HealthController {
       checks.redis = false;
     }
 
-    // Check Supabase
     try {
       const { error } = await this.supabaseService
         .getClient()
@@ -34,7 +34,17 @@ export class HealthController {
       checks.supabase = false;
     }
 
-    const healthy = Object.values(checks).every((v) => v);
+    if (this.mediaService) {
+      try {
+        checks.videoQueue = await this.mediaService.getQueueStats();
+      } catch {
+        checks.videoQueue = { error: true };
+      }
+    }
+
+    const healthy = Object.entries(checks)
+      .filter(([key]) => key !== 'videoQueue')
+      .every(([, value]) => value === true);
 
     return {
       status: healthy ? 'healthy' : 'unhealthy',

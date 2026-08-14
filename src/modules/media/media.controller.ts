@@ -10,26 +10,59 @@ import {
   Request,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
+  Headers,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { MediaService } from './media.service';
 import { MigrationService } from './migration.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
+import { RedisService } from '../../core/redis/redis.service';
 import { IsOptional, IsString, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-// Multipart form sends booleans as strings ('true'/'false').
-// enableImplicitConversion uses Boolean() which turns 'false' → true, so we need explicit transform.
+const UPLOADS_PER_DAY = 3;
+const UPLOAD_RATE_TTL_SECONDS = 24 * 60 * 60;
+
 const BoolTransform = () => Transform(({ value }) => value === true || value === 'true' || value === '1');
+
+function parseMultipartBool(value: unknown, defaultValue = false): boolean {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function parseHashtags(raw: unknown): string[] {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).trim()).filter(Boolean);
+  }
+  const text = String(raw).trim();
+  if (!text) return [];
+  if (text.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item).trim()).filter(Boolean);
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return text.split(',').map((tag) => tag.trim()).filter(Boolean);
+}
 
 class UploadVideoDto {
   @IsOptional() @IsString() caption?: string;
   @IsOptional() @IsString() locationName?: string;
   @IsOptional() @IsString() durationSeconds?: string;
+  @IsOptional() @IsString() hashtags?: string;
   @IsOptional() @IsBoolean() @BoolTransform() isPublic?: boolean;
   @IsOptional() @IsBoolean() @BoolTransform() allowComments?: boolean;
   @IsOptional() @IsBoolean() @BoolTransform() allowDownloads?: boolean;
@@ -42,11 +75,36 @@ export class MediaController {
     private mediaService: MediaService,
     private migrationService: MigrationService,
     private supabaseService: SupabaseService,
+    private redisService: RedisService,
+    private configService: ConfigService,
   ) {}
+
+  private assertAdminSecret(secret?: string) {
+    const expected =
+      this.configService.get<string>('SUPPORT_ADMIN_SECRET', '') ||
+      this.configService.get<string>('ADMIN_SECRET', '');
+
+    if (!expected || secret !== expected) {
+      throw new ForbiddenException('Invalid admin secret');
+    }
+  }
+
+  private async assertDailyUploadLimit(userId: string) {
+    const key = `media:upload:daily:${userId}`;
+    const count = await this.redisService.incr(key);
+    if (count === 1) {
+      await this.redisService.expire(key, UPLOAD_RATE_TTL_SECONDS);
+    }
+    if (count > UPLOADS_PER_DAY) {
+      throw new HttpException(
+        `Upload limit reached (${UPLOADS_PER_DAY} videos per 24 hours). Try again tomorrow.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
 
   /**
    * POST /v1/media/upload-video
-   * Receives video from phone, saves to disk, queues FFmpeg encoding → R2 upload
    */
   @Post('upload-video')
   @UseGuards(AuthGuard)
@@ -58,7 +116,7 @@ export class MediaController {
           cb(null, `${uuidv4()}${extname(file.originalname)}`);
         },
       }),
-      limits: { fileSize: 300 * 1024 * 1024 }, // 300MB max
+      limits: { fileSize: 300 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
         if (file.mimetype.startsWith('video/')) {
           cb(null, true);
@@ -78,9 +136,18 @@ export class MediaController {
     const userId = req.user?.sub || req.user?.id;
     if (!userId) throw new BadRequestException('User not authenticated');
 
-    const supabase = this.supabaseService.getClient();
+    const rawBody = req.body ?? {};
+    const isDraft = parseMultipartBool(rawBody.isDraft ?? dto.isDraft);
+    if (!isDraft) {
+      await this.assertDailyUploadLimit(userId);
+    }
 
-    // Create post record immediately with processing status
+    const isPublic = parseMultipartBool(rawBody.isPublic ?? dto.isPublic, true);
+    const allowComments = parseMultipartBool(rawBody.allowComments ?? dto.allowComments, true);
+    const allowDownloads = parseMultipartBool(rawBody.allowDownloads ?? dto.allowDownloads, true);
+    const hashtags = parseHashtags(rawBody.hashtags ?? dto.hashtags);
+
+    const supabase = this.supabaseService.getClient();
     const { data: post, error } = await supabase
       .from('posts')
       .insert({
@@ -88,10 +155,11 @@ export class MediaController {
         post_type: 'video',
         caption: dto.caption || null,
         location_name: dto.locationName || null,
-        is_public: dto.isPublic !== false,   // default true if omitted
-        allow_comments: dto.allowComments !== false,
-        allow_downloads: dto.allowDownloads !== false,
-        is_draft: dto.isDraft === true,      // default false if omitted
+        hashtags,
+        is_public: isPublic,
+        allow_comments: allowComments,
+        allow_downloads: allowDownloads,
+        is_draft: isDraft,
         duration_seconds: dto.durationSeconds ? parseInt(dto.durationSeconds, 10) : null,
         storage_type: 'r2',
         processing_status: 'processing',
@@ -108,12 +176,12 @@ export class MediaController {
       throw new BadRequestException(`Failed to create post: ${error?.message}`);
     }
 
-    // Queue encoding job
     const jobId = await this.mediaService.addVideoJob({
       inputPath: file.path,
       postId: post.id,
       userId,
       originalFilename: file.originalname,
+      isDraft,
     });
 
     return {
@@ -127,10 +195,6 @@ export class MediaController {
     };
   }
 
-  /**
-   * GET /v1/media/job/:jobId
-   * Poll for encoding job status
-   */
   @Get('job/:jobId')
   @UseGuards(AuthGuard)
   async getJobStatus(@Param('jobId') jobId: string) {
@@ -139,24 +203,46 @@ export class MediaController {
     return { success: true, data: status };
   }
 
-  /**
-   * POST /v1/media/migrate
-   * Admin: start migration of old Cloudflare Stream videos to R2
-   */
+  /** Admin: queue depth + worker health */
+  @Get('admin/queue-stats')
+  async getQueueStats(@Headers('x-admin-secret') adminSecret?: string) {
+    this.assertAdminSecret(adminSecret);
+    const stats = await this.mediaService.getQueueStats();
+    return { success: true, data: stats };
+  }
+
+  /** Admin: list posts stuck in failed encoding */
+  @Get('admin/failed')
+  async listFailedPosts(@Headers('x-admin-secret') adminSecret?: string) {
+    this.assertAdminSecret(adminSecret);
+    const data = await this.mediaService.listFailedPosts();
+    return { success: true, data };
+  }
+
+  /** Admin: retry a failed encode when possible */
+  @Post('admin/retry/:postId')
+  async retryFailedPost(
+    @Param('postId') postId: string,
+    @Headers('x-admin-secret') adminSecret?: string,
+  ) {
+    this.assertAdminSecret(adminSecret);
+    const result = await this.mediaService.retryFailedPost(postId);
+    return { success: true, data: result };
+  }
+
   @Post('migrate')
-  @UseGuards(AuthGuard)
-  async startMigration(@Body() body: { batchSize?: number }) {
+  async startMigration(
+    @Body() body: { batchSize?: number },
+    @Headers('x-admin-secret') adminSecret?: string,
+  ) {
+    this.assertAdminSecret(adminSecret);
     await this.migrationService.startMigration(body.batchSize ?? 4);
     return { success: true, message: 'Migration started in background' };
   }
 
-  /**
-   * GET /v1/media/migrate/progress
-   * Check migration progress
-   */
   @Get('migrate/progress')
-  @UseGuards(AuthGuard)
-  getMigrationProgress() {
+  async getMigrationProgress(@Headers('x-admin-secret') adminSecret?: string) {
+    this.assertAdminSecret(adminSecret);
     return { success: true, data: this.migrationService.getProgress() };
   }
 }

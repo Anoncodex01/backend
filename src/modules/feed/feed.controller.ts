@@ -147,6 +147,7 @@ export class FeedController {
     @Query('createdAfter') createdAfter?: string,
     @Query('fresh') fresh?: string,
     @Query('mode') mode?: string,
+    @Query('storageType') storageType?: string,
     @Headers('authorization') authHeader?: string,
   ) {
     let userId: string | undefined;
@@ -171,6 +172,7 @@ export class FeedController {
       ? new Date(createdAfter).toISOString()
       : undefined;
     const safeMode = mode === 'old_gems' ? 'old_gems' : 'reels';
+    const safeStorageType = storageType?.trim().toLowerCase() || undefined;
     const posts = await this.feedService.getReelsFeed({
       userId,
       limit: safeLimit,
@@ -179,6 +181,7 @@ export class FeedController {
       fresh: forceFresh,
       createdAfter: safeCreatedAfter,
       mode: safeMode,
+      storageType: safeStorageType,
     });
     const cursorPost = safeMode === 'old_gems'
       ? [...posts].reverse().find((post: any) => post?._feed_source !== 'trending_gem')

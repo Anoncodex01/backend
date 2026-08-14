@@ -207,6 +207,7 @@ export class FeedService {
     fresh?: boolean;
     createdAfter?: string;
     mode?: 'reels' | 'old_gems';
+    storageType?: string;
   }) {
     const limit = options.limit || 20;
     const offset = options.offset || 0;
@@ -214,10 +215,11 @@ export class FeedService {
     const fresh = options.fresh === true;
     const createdAfter = options.createdAfter;
     const mode = options.mode || 'reels';
+    const storageType = options.storageType?.toLowerCase();
     const isFirstPage = !cursor && offset === 0 && !createdAfter;
     const cacheKey = mode === 'old_gems'
-      ? `feed:reels:old_gems:page1:${limit}`
-      : `feed:reels:v2:page1:${limit}`;
+      ? `feed:reels:old_gems:page1:${limit}${storageType ? `:${storageType}` : ''}`
+      : `feed:reels:v2:page1:${limit}${storageType ? `:${storageType}` : ''}`;
 
     let posts: any[] | null = null;
     if (isFirstPage && !fresh) {
@@ -230,8 +232,8 @@ export class FeedService {
 
     if (!posts) {
       posts = mode === 'old_gems'
-        ? await this.supabaseService.getOldGemsReelsPosts(limit, offset, cursor)
-        : await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter);
+        ? await this.supabaseService.getOldGemsReelsPosts(limit, offset, cursor, { storageType })
+        : await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter, { storageType });
       if (isFirstPage && !fresh) {
         try {
           await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
@@ -365,6 +367,7 @@ export class FeedService {
       await this.redisService.deletePattern('feed:foryou:*');
       await this.redisService.del('feed:trending:page1');
       await this.redisService.deletePattern('feed:reels:page1:*');
+      await this.redisService.deletePattern('feed:reels:v2:*');
       await this.redisService.deletePattern('feed:reels:old_gems:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
