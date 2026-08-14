@@ -3,7 +3,6 @@ import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SupabaseModule } from '../core/supabase/supabase.module';
 import { RedisModule } from '../core/redis/redis.module';
-import { FeedModule } from '../modules/feed/feed.module';
 import { MediaService } from '../modules/media/media.service';
 import { R2Service } from '../modules/media/r2.service';
 import { FfmpegService } from '../modules/media/ffmpeg.service';
@@ -17,7 +16,6 @@ import { FfmpegService } from '../modules/media/ffmpeg.service';
     ScheduleModule.forRoot(),
     RedisModule,
     SupabaseModule,
-    FeedModule,
   ],
   providers: [MediaService, R2Service, FfmpegService],
 })
