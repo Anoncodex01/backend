@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { MediaService } from './media.service';
+import { MediaAdminService } from './media-admin.service';
 import { MigrationService } from './migration.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { RedisService } from '../../core/redis/redis.service';
@@ -73,6 +74,7 @@ class UploadVideoDto {
 export class MediaController {
   constructor(
     private mediaService: MediaService,
+    private mediaAdminService: MediaAdminService,
     private migrationService: MigrationService,
     private supabaseService: SupabaseService,
     private redisService: RedisService,
@@ -203,12 +205,51 @@ export class MediaController {
     return { success: true, data: status };
   }
 
+  /** Admin: worker queue + migration + failed encodes */
+  @Get('admin/overview')
+  async getAdminOverview(@Headers('x-admin-secret') adminSecret?: string) {
+    this.assertAdminSecret(adminSecret);
+    const data = await this.mediaAdminService.getOverview();
+    return { success: true, data };
+  }
+
   /** Admin: queue depth + worker health */
   @Get('admin/queue-stats')
   async getQueueStats(@Headers('x-admin-secret') adminSecret?: string) {
     this.assertAdminSecret(adminSecret);
     const stats = await this.mediaService.getQueueStats();
     return { success: true, data: stats };
+  }
+
+  /** Admin: list runnable + discovered scripts */
+  @Get('admin/scripts')
+  async listAdminScripts(@Headers('x-admin-secret') adminSecret?: string) {
+    this.assertAdminSecret(adminSecret);
+    const scripts = this.mediaAdminService.listScripts();
+    const lastRuns = scripts
+      .filter((s) => s.runnable)
+      .map((s) => ({
+        scriptId: s.id,
+        lastRun: this.mediaAdminService.getLastRun(s.id),
+      }));
+    return { success: true, data: { scripts, lastRuns } };
+  }
+
+  /** Admin: run a whitelisted script or internal action */
+  @Post('admin/scripts/run')
+  async runAdminScript(
+    @Body() body: { scriptId?: string; confirmDangerous?: boolean },
+    @Headers('x-admin-secret') adminSecret?: string,
+  ) {
+    this.assertAdminSecret(adminSecret);
+    if (!body.scriptId) {
+      throw new BadRequestException('scriptId is required');
+    }
+    const data = await this.mediaAdminService.runScript(
+      body.scriptId,
+      body.confirmDangerous === true,
+    );
+    return { success: true, data };
   }
 
   /** Admin: list posts stuck in failed encoding */

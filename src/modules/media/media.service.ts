@@ -221,6 +221,10 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
 
   @Cron('0 */6 * * *')
   cleanupTempDirectories(): void {
+    this.runTempCleanupNow();
+  }
+
+  runTempCleanupNow(): void {
     this.purgeOldFiles(this.uploadTempDir, 24 * 60 * 60 * 1000);
     this.purgeOldFiles(this.processingTempDir, 6 * 60 * 60 * 1000);
   }

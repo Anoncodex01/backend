@@ -5,6 +5,7 @@ import { RedisModule } from '../../core/redis/redis.module';
 import { FeedModule } from '../feed/feed.module';
 import { MediaController } from './media.controller';
 import { MediaService } from './media.service';
+import { MediaAdminService } from './media-admin.service';
 import { R2Service } from './r2.service';
 import { FfmpegService } from './ffmpeg.service';
 import { MigrationService } from './migration.service';
@@ -17,7 +18,7 @@ import { MigrationService } from './migration.service';
     forwardRef(() => FeedModule),
   ],
   controllers: [MediaController],
-  providers: [MediaService, R2Service, FfmpegService, MigrationService],
-  exports: [MediaService, R2Service],
+  providers: [MediaService, MediaAdminService, R2Service, FfmpegService, MigrationService],
+  exports: [MediaService, MediaAdminService, R2Service],
 })
 export class MediaModule {}
