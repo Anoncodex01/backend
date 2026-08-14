@@ -19,6 +19,8 @@ services:
       - .env
     depends_on:
       - redis
+    volumes:
+      - whapvibez-upload-tmp:/tmp/whapvibez-uploads
     networks:
       - whapvibez-network
     healthcheck:
@@ -45,6 +47,8 @@ services:
       - .env
     depends_on:
       - redis
+    volumes:
+      - whapvibez-upload-tmp:/tmp/whapvibez-uploads
     networks:
       - whapvibez-network
 
@@ -92,3 +96,4 @@ volumes:
   redis-data:
     external: true
     name: backend_redis-data
+  whapvibez-upload-tmp:

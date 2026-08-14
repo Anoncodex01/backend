@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { Queue, Worker, Job } from 'bullmq';
 import { SupabaseService } from '../../core/supabase/supabase.service';
+import { RedisService } from '../../core/redis/redis.service';
 import { R2Service } from './r2.service';
 import { FfmpegService } from './ffmpeg.service';
 import { FeedService } from '../feed/feed.service';
@@ -24,6 +25,18 @@ export interface VideoJobData {
   originalFilename: string;
   isDraft?: boolean;
 }
+
+interface EncodePostMeta {
+  inputPath: string;
+  userId: string;
+  isDraft: boolean;
+  originalFilename: string;
+  queuedAt: string;
+  lastJobId?: string;
+}
+
+const ENCODE_META_TTL_SECONDS = 24 * 60 * 60;
+const STALE_PROCESSING_MINUTES = 25;
 
 export interface JobStatus {
   id: string;
@@ -56,6 +69,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private configService: ConfigService,
     private supabaseService: SupabaseService,
+    private redisService: RedisService,
     private r2Service: R2Service,
     private ffmpegService: FfmpegService,
     @Optional() @Inject(forwardRef(() => FeedService))
@@ -115,6 +129,16 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       removeOnComplete: { age: 86400 },
       removeOnFail: { age: 86400 },
     });
+
+    await this.saveEncodeMeta(data.postId, {
+      inputPath: data.inputPath,
+      userId: data.userId,
+      isDraft: data.isDraft ?? false,
+      originalFilename: data.originalFilename,
+      queuedAt: new Date().toISOString(),
+      lastJobId: job.id!,
+    });
+
     return job.id!;
   }
 
@@ -185,19 +209,37 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       return { message: 'Post is not in failed state' };
     }
 
-    // Look for a leftover upload file named with post id prefix (best-effort)
-    const uploadDirFiles = fs.existsSync(this.uploadTempDir)
-      ? fs.readdirSync(this.uploadTempDir)
-      : [];
-    const candidate = uploadDirFiles.find((name) => name.includes(postId));
-    if (candidate) {
-      const inputPath = path.join(this.uploadTempDir, candidate);
+    // Prefer Redis metadata (filename is a UUID, not postId)
+    const meta = await this.getEncodeMeta(postId);
+    const inputPath = meta?.inputPath && fs.existsSync(meta.inputPath) ? meta.inputPath : null;
+    if (inputPath) {
       await supabase
         .from('posts')
         .update({ processing_status: 'processing', processing_error: null })
         .eq('id', postId);
       const jobId = await this.addVideoJob({
         inputPath,
+        postId,
+        userId: post.user_id,
+        originalFilename: meta!.originalFilename,
+        isDraft: meta!.isDraft,
+      });
+      return { jobId, message: 'Retry job queued from saved upload file' };
+    }
+
+    // Legacy fallback: scan upload dir
+    const uploadDirFiles = fs.existsSync(this.uploadTempDir)
+      ? fs.readdirSync(this.uploadTempDir)
+      : [];
+    const candidate = uploadDirFiles.find((name) => name.includes(postId));
+    if (candidate) {
+      const legacyPath = path.join(this.uploadTempDir, candidate);
+      await supabase
+        .from('posts')
+        .update({ processing_status: 'processing', processing_error: null })
+        .eq('id', postId);
+      const jobId = await this.addVideoJob({
+        inputPath: legacyPath,
         postId,
         userId: post.user_id,
         originalFilename: candidate,
@@ -221,7 +263,65 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
 
   @Cron('0 */6 * * *')
   cleanupTempDirectories(): void {
+    if (!this.workerOnly) return;
     this.runTempCleanupNow();
+  }
+
+  /** Re-queue or fail videos stuck in processing (worker crash, lost job, etc.) */
+  @Cron('*/10 * * * *')
+  async recoverStaleProcessingPosts(): Promise<void> {
+    if (!this.workerOnly) return;
+
+    const supabase = this.supabaseService.getClient();
+    const cutoff = new Date(Date.now() - STALE_PROCESSING_MINUTES * 60 * 1000).toISOString();
+
+    const { data: stalePosts, error } = await supabase
+      .from('posts')
+      .select('id, user_id, created_at, processing_status')
+      .eq('processing_status', 'processing')
+      .lt('created_at', cutoff)
+      .limit(25);
+
+    if (error) {
+      this.logger.warn(`Stale processing scan failed: ${error.message}`);
+      return;
+    }
+    if (!stalePosts?.length) return;
+
+    const activePostIds = await this.getActiveEncodePostIds();
+
+    for (const post of stalePosts) {
+      if (activePostIds.has(post.id)) continue;
+
+      const meta = await this.getEncodeMeta(post.id);
+      const inputPath = meta?.inputPath;
+      const fileReady = !!inputPath && fs.existsSync(inputPath);
+
+      if (fileReady) {
+        this.logger.warn(`Re-queueing stale processing post ${post.id}`);
+        try {
+          await this.addVideoJob({
+            inputPath: inputPath!,
+            postId: post.id,
+            userId: post.user_id,
+            originalFilename: meta!.originalFilename,
+            isDraft: meta!.isDraft,
+          });
+        } catch (e) {
+          this.logger.error(`Failed to re-queue post ${post.id}: ${e}`);
+        }
+        continue;
+      }
+
+      this.logger.warn(`Marking stale processing post ${post.id} as failed (source file gone)`);
+      await supabase
+        .from('posts')
+        .update({
+          processing_status: 'failed',
+          processing_error: 'Encoding timed out — please re-upload the video',
+        })
+        .eq('id', post.id);
+    }
   }
 
   runTempCleanupNow(): void {
@@ -307,8 +407,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       this.ffmpegService.cleanup(encoding.hlsDir);
       this.safeDelete(inputPath);
 
-      await this.feedService?.invalidateFeedCache();
-      await this.feedService?.invalidateFollowingFeed(userId);
+      await this.invalidateFeedCaches(userId, postId);
 
       this.logger.log(`[${jobId}] Done. videoUrl=${videoUrl}`);
       return { videoUrl, thumbnailUrl, postId };
@@ -342,5 +441,60 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
 
   getTempUploadDir(): string {
     return this.uploadTempDir;
+  }
+
+  private encodeMetaKey(postId: string): string {
+    return `media:encode:post:${postId}`;
+  }
+
+  private async saveEncodeMeta(postId: string, meta: EncodePostMeta): Promise<void> {
+    try {
+      await this.redisService.setJson(this.encodeMetaKey(postId), meta, ENCODE_META_TTL_SECONDS);
+    } catch (e) {
+      this.logger.warn(`Could not persist encode metadata for ${postId}: ${e}`);
+    }
+  }
+
+  private async getEncodeMeta(postId: string): Promise<EncodePostMeta | null> {
+    try {
+      return await this.redisService.getJson<EncodePostMeta>(this.encodeMetaKey(postId));
+    } catch {
+      return null;
+    }
+  }
+
+  private async getActiveEncodePostIds(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    try {
+      const jobs = await this.queue.getJobs(['waiting', 'active', 'delayed']);
+      for (const job of jobs) {
+        const postId = job.data?.postId;
+        if (postId) ids.add(postId);
+      }
+    } catch (e) {
+      this.logger.warn(`Could not inspect encode queue: ${e}`);
+    }
+    return ids;
+  }
+
+  private async invalidateFeedCaches(userId: string, postId: string): Promise<void> {
+    try {
+      if (this.feedService) {
+        await this.feedService.invalidateFeedCache();
+        await this.feedService.invalidateFollowingFeed(userId);
+        await this.feedService.invalidatePostCache(postId);
+        return;
+      }
+
+      await this.redisService.deletePattern('feed:foryou:*');
+      await this.redisService.del('feed:trending:page1');
+      await this.redisService.deletePattern('feed:reels:page1:*');
+      await this.redisService.deletePattern('feed:reels:v2:*');
+      await this.redisService.deletePattern('feed:reels:old_gems:*');
+      await this.redisService.deletePattern(`feed:following:${userId}:*`);
+      await this.redisService.del(`post:${postId}`);
+    } catch (e) {
+      this.logger.warn(`Feed cache invalidation failed for post ${postId}: ${e}`);
+    }
   }
 }
