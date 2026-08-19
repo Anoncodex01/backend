@@ -3,8 +3,11 @@ import {
   Get,
   Param,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ShopService } from './shop.service';
+import { AuthGuard } from '../auth/guards/auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @Controller('shop')
 export class ShopController {
@@ -77,6 +80,20 @@ export class ShopController {
     return {
       success: true,
       data: product,
+    };
+  }
+
+  /**
+   * GET /v1/shop/cart/count
+   * Total cart quantity for the authenticated user (Redis cached).
+   */
+  @Get('cart/count')
+  @UseGuards(AuthGuard)
+  async getCartCount(@CurrentUser() user: any) {
+    const count = await this.shopService.getCartCount(user.sub);
+    return {
+      success: true,
+      data: { count },
     };
   }
 

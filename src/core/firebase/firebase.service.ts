@@ -49,6 +49,11 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
+  /** True when Firebase Admin is configured and ready for Firestore/FCM. */
+  isFirestoreAvailable(): boolean {
+    return this.isInitialized;
+  }
+
   private checkInitialized() {
     if (!this.isInitialized) {
       throw new Error('Firebase is not initialized. Please configure FIREBASE_* environment variables.');

@@ -1223,6 +1223,21 @@ export class SupabaseService implements OnModuleInit {
     return data || [];
   }
 
+  async getCartItemCount(userId: string): Promise<number> {
+    const { data, error } = await this.client
+      .from('cart_items')
+      .select('quantity')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    return (data || []).reduce(
+      (sum: number, row: { quantity?: number }) =>
+        sum + (row.quantity ?? 0),
+      0,
+    );
+  }
+
   // ===== Notifications =====
 
   async createNotification(data: {

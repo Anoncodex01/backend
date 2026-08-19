@@ -207,15 +207,81 @@ export class FeedController {
   /**
    * GET /v1/feed/stories
    * Active stories (< 24 h), globally Redis-cached for 45 s.
-   * Auth is optional — returns the same story list for all users.
+   * When authenticated, includes viewedStoryIds in meta for the current user.
    */
   @Get('stories')
-  async getStories() {
+  async getStories(@Headers('authorization') authHeader?: string) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // Continue without viewer context
+      }
+    }
+
     const stories = await this.feedService.getActiveStories();
+    let viewedStoryIds: string[] = [];
+    if (userId && stories.length > 0) {
+      const storyIds = stories
+        .map((story: any) => story?.id?.toString())
+        .filter((id: string | undefined): id is string => !!id);
+      viewedStoryIds = await this.feedService.getViewedStoryIds(userId, storyIds);
+    }
+
     return {
       success: true,
       data: stories,
-      meta: { count: stories.length },
+      meta: {
+        count: stories.length,
+        ...(userId ? { viewedStoryIds } : {}),
+      },
+    };
+  }
+
+  /**
+   * GET /v1/feed/following
+   * Shortcut for the following tab (same as GET /feed?tab=following).
+   */
+  @Get('following')
+  async getFollowingFeedShortcut(
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // fall through
+      }
+    }
+
+    if (!userId) {
+      return {
+        success: true,
+        data: [],
+        message: 'Login required for following feed',
+      };
+    }
+
+    const posts = await this.feedService.getFollowingFeed({ userId, limit, offset });
+
+    return {
+      success: true,
+      data: posts,
+      meta: {
+        tab: 'following',
+        limit,
+        offset,
+        count: posts.length,
+        hasMore: posts.length === limit,
+      },
     };
   }
 

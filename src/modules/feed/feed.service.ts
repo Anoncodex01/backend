@@ -326,6 +326,46 @@ export class FeedService {
   }
 
   /**
+   * Story IDs the viewer has already seen (for story ring UI).
+   */
+  async getViewedStoryIds(userId: string, storyIds: string[]): Promise<string[]> {
+    if (!userId || storyIds.length === 0) return [];
+
+    const activeIds = new Set(storyIds);
+    const cacheKey = `me:story_views:${userId}`;
+    let allViewed: string[] | null = null;
+
+    try {
+      allViewed = await this.redisService.getJson<string[]>(cacheKey);
+    } catch (error) {
+      console.warn('Redis story views cache read failed:', error);
+    }
+
+    if (!allViewed) {
+      const client = this.supabaseService.getClient();
+      const { data, error } = await client
+        .from('story_views')
+        .select('story_id')
+        .eq('viewer_user_id', userId);
+
+      if (error) {
+        console.warn('Error fetching story views:', error.message);
+        return [];
+      }
+
+      allViewed = (data || []).map((row: any) => row.story_id as string);
+
+      try {
+        await this.redisService.setJson(cacheKey, allViewed, 60);
+      } catch (cacheError) {
+        console.warn('Redis story views cache write failed:', cacheError);
+      }
+    }
+
+    return allViewed.filter((id) => activeIds.has(id));
+  }
+
+  /**
    * Invalidate stories cache (call after a new story is created or deleted)
    */
   async invalidateStoriesCache() {

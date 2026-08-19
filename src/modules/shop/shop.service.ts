@@ -103,6 +103,22 @@ export class ShopService {
   }
 
   /**
+   * Get cart item count for authenticated user (Redis cached).
+   */
+  async getCartCount(userId: string): Promise<number> {
+    const cacheKey = `shop:cart-count:${userId}`;
+    return this.redisService.getOrSet(
+      cacheKey,
+      () => this.supabaseService.getCartItemCount(userId),
+      30,
+    );
+  }
+
+  async invalidateCartCount(userId: string): Promise<void> {
+    await this.redisService.del(`shop:cart-count:${userId}`);
+  }
+
+  /**
    * Invalidate product cache
    */
   async invalidateProductCache(productId?: string) {
