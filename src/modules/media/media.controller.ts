@@ -12,8 +12,6 @@ import {
   NotFoundException,
   ForbiddenException,
   Headers,
-  HttpException,
-  HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -25,12 +23,8 @@ import { MediaService } from './media.service';
 import { MediaAdminService } from './media-admin.service';
 import { MigrationService } from './migration.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
-import { RedisService } from '../../core/redis/redis.service';
 import { IsOptional, IsString, IsBoolean } from 'class-validator';
 import { Transform } from 'class-transformer';
-
-const UPLOADS_PER_DAY = 3;
-const UPLOAD_RATE_TTL_SECONDS = 24 * 60 * 60;
 
 const BoolTransform = () => Transform(({ value }) => value === true || value === 'true' || value === '1');
 
@@ -77,7 +71,6 @@ export class MediaController {
     private mediaAdminService: MediaAdminService,
     private migrationService: MigrationService,
     private supabaseService: SupabaseService,
-    private redisService: RedisService,
     private configService: ConfigService,
   ) {}
 
@@ -88,20 +81,6 @@ export class MediaController {
 
     if (!expected || secret !== expected) {
       throw new ForbiddenException('Invalid admin secret');
-    }
-  }
-
-  private async assertDailyUploadLimit(userId: string) {
-    const key = `media:upload:daily:${userId}`;
-    const count = await this.redisService.incr(key);
-    if (count === 1) {
-      await this.redisService.expire(key, UPLOAD_RATE_TTL_SECONDS);
-    }
-    if (count > UPLOADS_PER_DAY) {
-      throw new HttpException(
-        `Upload limit reached (${UPLOADS_PER_DAY} videos per 24 hours). Try again tomorrow.`,
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
     }
   }
 
@@ -140,9 +119,6 @@ export class MediaController {
 
     const rawBody = req.body ?? {};
     const isDraft = parseMultipartBool(rawBody.isDraft ?? dto.isDraft);
-    if (!isDraft) {
-      await this.assertDailyUploadLimit(userId);
-    }
 
     const isPublic = parseMultipartBool(rawBody.isPublic ?? dto.isPublic, true);
     const allowComments = parseMultipartBool(rawBody.allowComments ?? dto.allowComments, true);

@@ -19,6 +19,6 @@ import { MigrationService } from './migration.service';
   ],
   controllers: [MediaController],
   providers: [MediaService, MediaAdminService, R2Service, FfmpegService, MigrationService],
-  exports: [MediaService, MediaAdminService, R2Service],
+  exports: [MediaService, MediaAdminService, R2Service, FfmpegService],
 })
 export class MediaModule {}

@@ -361,7 +361,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`[${jobId}] Starting FFmpeg encoding`);
       await job.updateProgress(10);
 
-      const encoding = await this.ffmpegService.encodeVideo(inputPath, jobId);
+      const encoding = await this.ffmpegService.encodeVideo(inputPath, jobId, postId);
       await job.updateProgress(60);
 
       this.logger.log(`[${jobId}] Uploading thumbnail`);
@@ -369,22 +369,25 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       const thumbnailUrl = await this.r2Service.uploadFile(thumbKey, encoding.thumbnailPath, 'image/jpeg');
       await job.updateProgress(70);
 
-      this.logger.log(`[${jobId}] Uploading HLS files`);
-      const playlistKey = `videos/${postId}/playlist.m3u8`;
-      await this.r2Service.uploadFile(playlistKey, encoding.playlistPath, 'application/vnd.apple.mpegurl');
-      await job.updateProgress(75);
+      this.logger.log(`[${jobId}] Uploading ABR HLS (master + variants)`);
+      const masterKey = `videos/${postId}/master.m3u8`;
+      await this.r2Service.uploadFile(
+        masterKey,
+        encoding.masterPlaylistPath,
+        'application/vnd.apple.mpegurl',
+      );
+      await job.updateProgress(72);
 
-      const segmentFiles = fs.readdirSync(encoding.hlsDir).filter((f) => f.endsWith('.ts'));
-      const total = segmentFiles.length;
+      const uploadFiles = encoding.uploadFiles;
+      const total = uploadFiles.length;
       for (let i = 0; i < total; i++) {
-        const segFile = segmentFiles[i];
-        const segKey = `videos/${postId}/${segFile}`;
-        await this.r2Service.uploadFile(segKey, path.join(encoding.hlsDir, segFile), 'video/MP2T');
-        const prog = 75 + Math.round(((i + 1) / total) * 20);
+        const file = uploadFiles[i];
+        await this.r2Service.uploadFile(file.r2Key, file.localPath, file.contentType);
+        const prog = 72 + Math.round(((i + 1) / total) * 23);
         await job.updateProgress(prog);
       }
 
-      const videoUrl = this.r2Service.getPublicUrl(playlistKey);
+      const videoUrl = this.r2Service.getPublicUrl(masterKey);
       await job.updateProgress(95);
 
       this.logger.log(`[${jobId}] Updating Supabase`);
@@ -415,18 +418,26 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[${jobId}] Processing failed: ${message}`);
 
+      const maxAttempts = job.opts.attempts ?? 1;
+      const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
+
       try {
-        const supabase = this.supabaseService.getClient();
-        await supabase
-          .from('posts')
-          .update({
-            processing_status: 'failed',
-            processing_error: message.slice(0, 500),
-          })
-          .eq('id', postId);
+        if (isFinalAttempt) {
+          const supabase = this.supabaseService.getClient();
+          await supabase
+            .from('posts')
+            .update({
+              processing_status: 'failed',
+              processing_error: message.slice(0, 500),
+            })
+            .eq('id', postId);
+        }
       } catch (_) {}
 
-      this.safeDelete(inputPath);
+      // Keep source file for BullMQ retry — only delete after the last attempt.
+      if (isFinalAttempt) {
+        this.safeDelete(inputPath);
+      }
       throw err;
     }
   }

@@ -24,6 +24,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { SupportModule } from './modules/support/support.module';
 import { PostsModule } from './modules/posts/posts.module';
 import { MediaModule } from './modules/media/media.module';
+import { StoriesModule } from './modules/stories/stories.module';
 
 // Gateway
 import { RealtimeGateway } from './gateways/realtime.gateway';
@@ -67,6 +68,7 @@ import { LegalController } from './legal.controller';
     SupportModule,
     PostsModule,
     MediaModule,
+    StoriesModule,
   ],
   controllers: [HealthController, LegalController],
   providers: [RealtimeGateway],
