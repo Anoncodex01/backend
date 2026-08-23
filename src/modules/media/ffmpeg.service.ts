@@ -13,6 +13,7 @@ export interface EncodingResult {
   hlsDir: string;
   masterPlaylistPath: string;
   thumbnailPath: string;
+  faststartPath: string;
   uploadFiles: HlsUploadFile[];
 }
 
@@ -83,9 +84,13 @@ export class FfmpegService {
     this.writeMasterPlaylist(outputDir, masterPlaylistPath);
     this.logger.log(`[${jobId}] ABR HLS encoding complete (3 variants + master)`);
 
+    this.logger.log(`[${jobId}] Encoding 360p faststart MP4`);
+    const faststartPath = await this.encodeFaststart(inputPath, outputDir, jobId);
+    this.logger.log(`[${jobId}] Faststart MP4 ready`);
+
     const uploadFiles = this.collectUploadFiles(outputDir, postId);
 
-    return { hlsDir: outputDir, masterPlaylistPath, thumbnailPath, uploadFiles };
+    return { hlsDir: outputDir, masterPlaylistPath, thumbnailPath, faststartPath, uploadFiles };
   }
 
   /** Extract a JPEG poster frame for short-form uploads (e.g. stories). */
@@ -205,6 +210,38 @@ export class FfmpegService {
     }
 
     fs.writeFileSync(masterPath, `${lines.join('\n')}\n`);
+  }
+
+  private encodeFaststart(inputPath: string, outputDir: string, jobId: string): Promise<string> {
+    const outputPath = path.join(outputDir, '360p_faststart.mp4');
+    const scaleFilter =
+      'scale=360:640:force_original_aspect_ratio=decrease,' +
+      'pad=360:640:(ow-iw)/2:(oh-ih)/2';
+
+    return new Promise((resolve, reject) => {
+      ffmpeg(inputPath)
+        .outputOptions([
+          '-pix_fmt yuv420p',
+          `-vf ${scaleFilter}`,
+          '-c:v libx264',
+          '-b:v 500k',
+          '-maxrate 600k',
+          '-bufsize 1200k',
+          '-preset veryfast',
+          '-profile:v high',
+          '-level 4.1',
+          '-c:a aac',
+          '-b:a 64k',
+          '-ar 44100',
+          '-movflags +faststart',
+          '-f mp4',
+        ])
+        .output(outputPath)
+        .on('start', (cmd: string) => this.logger.debug(`[${jobId}] faststart FFmpeg: ${cmd}`))
+        .on('end', () => resolve(outputPath))
+        .on('error', (err: Error) => reject(new Error(`faststart encode failed: ${err.message}`)))
+        .run();
+    });
   }
 
   private collectUploadFiles(outputDir: string, postId: string): HlsUploadFile[] {

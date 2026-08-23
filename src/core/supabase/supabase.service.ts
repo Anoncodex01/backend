@@ -500,7 +500,7 @@ export class SupabaseService implements OnModuleInit {
 
   /** Slim columns for feeds (faster network + parsing, no select('*')) */
   private static readonly FEED_POST_SELECT =
-    "id,user_id,caption,created_at,video_url,video_path,stream_uid,thumbnail_url,video_thumbnail_url,image_urls,views_count,likes_count,comments_count,shares_count,saves_count,is_public,post_type,report_count,ads_allowed,moderation_status,moderation_reason,storage_type,processing_status";
+    "id,user_id,caption,created_at,video_url,faststart_url,video_path,stream_uid,thumbnail_url,video_thumbnail_url,image_urls,views_count,likes_count,comments_count,shares_count,saves_count,is_public,post_type,report_count,ads_allowed,moderation_status,moderation_reason,storage_type,processing_status";
 
   private normalizePostMedia(post: any) {
     const normalized = { ...post };
@@ -565,10 +565,18 @@ export class SupabaseService implements OnModuleInit {
     return normalized;
   }
 
-  private diversifyByCreator(posts: any[], limit: number) {
+  diversifyByCreator(posts: any[], limit: number) {
     const buckets = new Map<string, any[]>();
     const creatorOrder: string[] = [];
     const usedPostIds = new Set<string>();
+    const nowMs = Date.now();
+
+    const isFreshPost = (post: any) => {
+      const createdAt = post?.created_at
+        ? new Date(post.created_at).getTime()
+        : 0;
+      return createdAt > 0 && nowMs - createdAt < 24 * 60 * 60 * 1000;
+    };
 
     for (const post of posts) {
       const postId = post?.id?.toString();
@@ -585,6 +593,7 @@ export class SupabaseService implements OnModuleInit {
 
     const diversified: any[] = [];
     let previousCreatorId: string | null = null;
+    let consecutiveSameCreator = 0;
 
     while (diversified.length < limit && buckets.size > 0) {
       let pickedCreatorId: string | null = null;
@@ -592,7 +601,12 @@ export class SupabaseService implements OnModuleInit {
       for (const creatorId of creatorOrder) {
         const bucket = buckets.get(creatorId);
         if (!bucket || bucket.length === 0) continue;
-        if (creatorId === previousCreatorId && buckets.size > 1) continue;
+        if (creatorId === previousCreatorId && buckets.size > 1) {
+          const nextPost = bucket[0];
+          const allowBurst =
+            isFreshPost(nextPost) && consecutiveSameCreator < 2;
+          if (!allowBurst) continue;
+        }
         pickedCreatorId = creatorId;
         break;
       }
@@ -610,6 +624,11 @@ export class SupabaseService implements OnModuleInit {
       const post = pickedBucket?.shift();
       if (post) {
         diversified.push(post);
+        if (pickedCreatorId === previousCreatorId) {
+          consecutiveSameCreator += 1;
+        } else {
+          consecutiveSameCreator = 1;
+        }
         previousCreatorId = pickedCreatorId;
       }
       if (!pickedBucket || pickedBucket.length === 0) {
@@ -793,16 +812,91 @@ export class SupabaseService implements OnModuleInit {
   }
 
   /**
-   * Get reels feed: mixed media posts (video + image, slim select, cursor pagination)
+   * Raw candidate pool for reels ranking (recent public posts, no creator diversification).
    */
-  async getReelsPosts(
-    limit = 20,
+  async getReelsCandidatePool(
+    poolLimit = 120,
     offset = 0,
     cursor?: string,
     createdAfter?: string,
     options?: { storageType?: string },
   ) {
-    const poolLimit = Math.min(Math.max(limit * 5, limit + 30), 120);
+    const data = await this.fetchReelsCandidateRows(
+      poolLimit,
+      offset,
+      cursor,
+      createdAfter,
+      options,
+    );
+    if (!data.length) return [];
+    return this.attachUsersToFeedPosts(
+      data.map((post: any) => this.normalizePostMedia(post)),
+    );
+  }
+
+  /**
+   * Signals used to personalize reels ordering for a viewer.
+   */
+  async getUserReelsRankingSignals(userId: string): Promise<{
+    viewedPostIds: string[];
+    likedCreatorIds: string[];
+    followingIds: string[];
+  }> {
+    const thirtyDaysAgo = new Date(
+      Date.now() - 30 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const [viewsResult, likesResult, followingIds] = await Promise.all([
+      this.client
+        .from("post_views")
+        .select("post_id")
+        .eq("user_id", userId)
+        .gte("viewed_at", thirtyDaysAgo)
+        .order("viewed_at", { ascending: false })
+        .limit(500),
+      this.client
+        .from("post_likes")
+        .select("post_id, posts(user_id)")
+        .eq("user_id", userId)
+        .limit(200),
+      this.getFollowingIds(userId),
+    ]);
+
+    if (viewsResult.error) {
+      console.warn("Reels ranking: post_views fetch failed:", viewsResult.error.message);
+    }
+    if (likesResult.error) {
+      console.warn("Reels ranking: post_likes fetch failed:", likesResult.error.message);
+    }
+
+    const viewedPostIds = [
+      ...new Set(
+        (viewsResult.data || [])
+          .map((row: any) => row.post_id?.toString())
+          .filter(Boolean),
+      ),
+    ];
+
+    const likedCreatorIds = new Set<string>();
+    for (const row of likesResult.data || []) {
+      const creatorId = (row as any).posts?.user_id?.toString();
+      if (creatorId) likedCreatorIds.add(creatorId);
+    }
+
+    return {
+      viewedPostIds,
+      likedCreatorIds: [...likedCreatorIds],
+      followingIds,
+    };
+  }
+
+  private async fetchReelsCandidateRows(
+    poolLimit: number,
+    offset: number,
+    cursor?: string,
+    createdAfter?: string,
+    options?: { storageType?: string },
+  ) {
     let query = this.client
       .from("posts")
       .select(SupabaseService.FEED_POST_SELECT)
@@ -816,7 +910,6 @@ export class SupabaseService implements OnModuleInit {
       }
     }
     query = query
-      // Reels supports both videos and image posts in the app.
       .or(
         [
           "post_type.eq.video",
@@ -840,27 +933,60 @@ export class SupabaseService implements OnModuleInit {
 
     const { data, error } = await query;
     if (error) throw error;
+    return data || [];
+  }
 
-    if (data && data.length > 0) {
+  private async attachUsersToFeedPosts(posts: any[]) {
+    if (!posts.length) return [];
+
+    const userIds = [...new Set(posts.map((p: any) => p.user_id))];
+    const { data: users } = await this.client
+      .from("users")
+      .select("id, username, full_name, profile_image_url, is_verified")
+      .in("id", userIds)
+      .eq("is_frozen", false);
+    const userMap = new Map((users || []).map((u: any) => [u.id, u]));
+
+    return posts
+      .filter((post: any) => userMap.has(post.user_id))
+      .map((post: any) => ({
+        ...post,
+        user: userMap.get(post.user_id) || null,
+      }));
+  }
+
+  /**
+   * Get reels feed: mixed media posts (video + image, slim select, cursor pagination)
+   */
+  async getReelsPosts(
+    limit = 20,
+    offset = 0,
+    cursor?: string,
+    createdAfter?: string,
+    options?: { storageType?: string; chronological?: boolean },
+  ) {
+    const poolLimit = Math.min(Math.max(limit * 5, limit + 30), 120);
+    const data = await this.fetchReelsCandidateRows(
+      poolLimit,
+      offset,
+      cursor,
+      createdAfter,
+      options,
+    );
+
+    if (data.length > 0) {
       const feedCursor = data[data.length - 1]?.created_at;
-      const diversifiedData = this.diversifyByCreator(data, limit);
-      const normalizedData = diversifiedData.map((post: any) =>
+      const selected = options?.chronological
+        ? data.slice(0, limit)
+        : this.diversifyByCreator(data, limit);
+      const normalizedData = selected.map((post: any) =>
         this.normalizePostMedia(post),
       );
-      const userIds = [...new Set(diversifiedData.map((p: any) => p.user_id))];
-      const { data: users } = await this.client
-        .from("users")
-        .select("id, username, full_name, profile_image_url, is_verified")
-        .in("id", userIds)
-        .eq("is_frozen", false);
-      const userMap = new Map((users || []).map((u: any) => [u.id, u]));
-      return normalizedData
-        .filter((post: any) => userMap.has(post.user_id))
-        .map((post: any) => ({
-          ...post,
-          _feed_cursor: feedCursor,
-          user: userMap.get(post.user_id) || null,
-        }));
+      const postsWithUsers = await this.attachUsersToFeedPosts(normalizedData);
+      return postsWithUsers.map((post: any) => ({
+        ...post,
+        _feed_cursor: feedCursor,
+      }));
     }
     return (data || []).map((post: any) => this.normalizePostMedia(post));
   }

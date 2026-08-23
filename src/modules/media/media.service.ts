@@ -383,9 +383,15 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
       for (let i = 0; i < total; i++) {
         const file = uploadFiles[i];
         await this.r2Service.uploadFile(file.r2Key, file.localPath, file.contentType);
-        const prog = 72 + Math.round(((i + 1) / total) * 23);
+        const prog = 72 + Math.round(((i + 1) / total) * 18);
         await job.updateProgress(prog);
       }
+
+      this.logger.log(`[${jobId}] Uploading faststart MP4`);
+      const faststartKey = `videos/${postId}/360p_faststart.mp4`;
+      await this.r2Service.uploadFile(faststartKey, encoding.faststartPath, 'video/mp4');
+      const faststartUrl = this.r2Service.getPublicUrl(faststartKey);
+      await job.updateProgress(92);
 
       const videoUrl = this.r2Service.getPublicUrl(masterKey);
       await job.updateProgress(95);
@@ -396,6 +402,7 @@ export class MediaService implements OnModuleInit, OnModuleDestroy {
         .from('posts')
         .update({
           video_url: videoUrl,
+          faststart_url: faststartUrl,
           thumbnail_url: thumbnailUrl,
           storage_type: 'r2',
           processing_status: 'completed',

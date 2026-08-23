@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as admin from 'firebase-admin';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
@@ -181,24 +182,43 @@ export class MeService {
 
   private async computeCommunityUnread(userId: string): Promise<number> {
     if (!this.firebaseService.isFirestoreAvailable()) {
+      console.warn(
+        'Community unread: Firebase Admin not configured on server — returning 0 (client fallback used in app)',
+      );
       return 0;
     }
 
     const client = this.supabaseService.getClient();
 
-    const { data: memberships, error: membershipError } = await client
-      .from('community_members')
-      .select('community_id')
-      .eq('user_id', userId);
+    const [
+      { data: memberships, error: membershipError },
+      { data: ownedCommunities, error: ownedError },
+    ] = await Promise.all([
+      client
+        .from('community_members')
+        .select('community_id')
+        .eq('user_id', userId),
+      client.from('communities').select('id').eq('creator_id', userId),
+    ]);
 
     if (membershipError) {
       console.warn('Community membership query failed:', membershipError.message);
       return 0;
     }
+    if (ownedError) {
+      console.warn('Owned communities query failed:', ownedError.message);
+    }
 
-    const communityIds = (memberships || [])
-      .map((row: { community_id?: string }) => row.community_id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const communityIds = Array.from(
+      new Set([
+        ...(memberships || [])
+          .map((row: { community_id?: string }) => row.community_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+        ...(ownedCommunities || [])
+          .map((row: { id?: string }) => row.id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ]),
+    );
 
     if (communityIds.length === 0) return 0;
 
@@ -229,31 +249,88 @@ export class MeService {
     const db = this.firebaseService.getFirestore();
     let total = 0;
 
-    const batchSize = 100;
+    const batchSize = 10;
     for (let i = 0; i < groupIds.length; i += batchSize) {
       const batch = groupIds.slice(i, i + batchSize);
-      const refs = batch.map((groupId) =>
-        db
-          .collection('group_messages')
-          .doc(groupId)
-          .collection('member_counters')
-          .doc(userId),
+      const counts = await Promise.all(
+        batch.map((groupId) =>
+          this.getGroupUnreadCount(db, groupId, userId).catch(() => 0),
+        ),
       );
-
-      try {
-        const snapshots = await db.getAll(...refs);
-        for (const snap of snapshots) {
-          const unreadCount = snap.data()?.unreadCount;
-          if (typeof unreadCount === 'number' && unreadCount > 0) {
-            total += unreadCount;
-          }
-        }
-      } catch (error) {
-        console.warn('Firestore community unread batch failed:', error);
-      }
+      total += counts.reduce((sum, n) => sum + n, 0);
     }
 
     return total;
+  }
+
+  private async getGroupUnreadCount(
+    db: admin.firestore.Firestore,
+    groupId: string,
+    userId: string,
+  ): Promise<number> {
+    const counterRef = db
+      .collection('group_messages')
+      .doc(groupId)
+      .collection('member_counters')
+      .doc(userId);
+
+    const counterSnap = await counterRef.get();
+    const unreadCount = counterSnap.data()?.unreadCount;
+    if (typeof unreadCount === 'number' && unreadCount >= 0) {
+      return unreadCount;
+    }
+
+    return this.countUnreadMessagesFallback(db, groupId, userId);
+  }
+
+  private async countUnreadMessagesFallback(
+    db: admin.firestore.Firestore,
+    groupId: string,
+    userId: string,
+  ): Promise<number> {
+    const readSnap = await db
+      .collection('group_messages')
+      .doc(groupId)
+      .collection('read_status')
+      .doc(userId)
+      .get();
+
+    let lastReadAt: Date | null = null;
+    if (readSnap.exists) {
+      const ts = readSnap.data()?.lastReadAt;
+      if (ts && typeof ts.toDate === 'function') {
+        lastReadAt = ts.toDate();
+      }
+    }
+
+    let query: admin.firestore.Query = db
+      .collection('group_messages')
+      .doc(groupId)
+      .collection('messages')
+      .limit(100);
+
+    if (lastReadAt) {
+      query = query.where(
+        'createdAt',
+        '>',
+        admin.firestore.Timestamp.fromDate(lastReadAt),
+      );
+    }
+
+    const messagesSnap = await query.get();
+    let count = 0;
+    for (const doc of messagesSnap.docs) {
+      const data = doc.data();
+      const senderId = data.senderId as string | undefined;
+      if (
+        senderId &&
+        senderId !== userId &&
+        data.messageType !== 'system'
+      ) {
+        count++;
+      }
+    }
+    return count;
   }
 
   private async getNotificationUnreadCount(userId: string): Promise<number> {

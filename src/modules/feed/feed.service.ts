@@ -2,12 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
+import {
+  rankReelsPosts,
+  toRankingSignals,
+} from './feed-ranking.util';
 
 @Injectable()
 export class FeedService {
   private feedTtl: number;
   private trendingTtl: number;
   private reelsTtl: number;
+  private personalizedReelsTtl: number;
+  private rankingSignalsTtl: number;
 
   constructor(
     private redisService: RedisService,
@@ -19,6 +25,8 @@ export class FeedService {
     this.trendingTtl = this.configService.get('CACHE_TRENDING_TTL', 30);
     // Keep first reels page hot for longer to reduce DB pressure and cold starts.
     this.reelsTtl = this.configService.get('CACHE_REELS_TTL', 45);
+    this.personalizedReelsTtl = this.configService.get('CACHE_PERSONALIZED_REELS_TTL', 45);
+    this.rankingSignalsTtl = this.configService.get('CACHE_RANKING_SIGNALS_TTL', 60);
   }
 
   /**
@@ -221,6 +229,25 @@ export class FeedService {
       ? `feed:reels:old_gems:page1:${limit}${storageType ? `:${storageType}` : ''}`
       : `feed:reels:v2:page1:${limit}${storageType ? `:${storageType}` : ''}`;
 
+    const usePersonalizedRanking =
+      !!options.userId &&
+      mode === 'reels' &&
+      !createdAfter &&
+      !fresh;
+
+    const chronological = fresh || !!createdAfter;
+
+    if (usePersonalizedRanking) {
+      return this.getPersonalizedReelsFeed({
+        userId: options.userId!,
+        limit,
+        offset,
+        cursor,
+        fresh,
+        storageType,
+      });
+    }
+
     let posts: any[] | null = null;
     if (isFirstPage && !fresh) {
       try {
@@ -233,7 +260,10 @@ export class FeedService {
     if (!posts) {
       posts = mode === 'old_gems'
         ? await this.supabaseService.getOldGemsReelsPosts(limit, offset, cursor, { storageType })
-        : await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter, { storageType });
+        : await this.supabaseService.getReelsPosts(limit, offset, cursor, createdAfter, {
+            storageType,
+            chronological,
+          });
       if (isFirstPage && !fresh) {
         try {
           await this.redisService.setJson(cacheKey, posts, this.reelsTtl);
@@ -248,6 +278,131 @@ export class FeedService {
     }
 
     return posts || [];
+  }
+
+  /**
+   * Behavioral reels ranking: score candidates per viewer (likes/saves/recency/affinity/seen).
+   */
+  private async getPersonalizedReelsFeed(options: {
+    userId: string;
+    limit: number;
+    offset: number;
+    cursor?: string;
+    fresh?: boolean;
+    storageType?: string;
+  }) {
+    const { userId, limit, offset, cursor, fresh, storageType } = options;
+    const cursorKey = cursor || `offset:${offset}`;
+    const cacheKey =
+      `feed:reels:personalized:v1:${userId}:${cursorKey}:${limit}` +
+      `${storageType ? `:${storageType}` : ''}`;
+
+    if (!fresh) {
+      try {
+        const cached = await this.redisService.getJson<any[]>(cacheKey);
+        if (cached) {
+          return cached;
+        }
+      } catch (error) {
+        console.warn('Redis personalized reels cache read failed:', error);
+      }
+    }
+
+    const poolLimit = Math.min(Math.max(limit * 8, 160), 240);
+    const [candidatePool, signalsRaw] = await Promise.all([
+      this.supabaseService.getReelsCandidatePool(
+        poolLimit,
+        offset,
+        cursor,
+        undefined,
+        { storageType },
+      ),
+      this.getReelsRankingSignals(userId),
+    ]);
+
+    const signals = toRankingSignals(signalsRaw);
+    let ranked = rankReelsPosts(
+      candidatePool,
+      signals,
+      limit,
+      (items, max) => this.supabaseService.diversifyByCreator(items, max),
+    );
+    ranked = this.pinFreshReels(ranked, candidatePool, limit);
+
+    const feedCursor =
+      candidatePool[candidatePool.length - 1]?.created_at ||
+      ranked[ranked.length - 1]?.created_at;
+
+    let posts = ranked.map((post: any) => ({
+      ...post,
+      _feed_cursor: feedCursor,
+    }));
+
+    if (posts.length > 0) {
+      posts = await this.enrichPostsWithUserStatus(posts, userId);
+    }
+
+    try {
+      await this.redisService.setJson(cacheKey, posts, this.personalizedReelsTtl);
+    } catch (error) {
+      console.warn('Redis personalized reels cache write failed:', error);
+    }
+
+    return posts;
+  }
+
+  private async getReelsRankingSignals(userId: string) {
+    const cacheKey = `feed:ranking:signals:${userId}`;
+
+    try {
+      const cached = await this.redisService.getJson<{
+        viewedPostIds: string[];
+        likedCreatorIds: string[];
+        followingIds: string[];
+      }>(cacheKey);
+      if (cached) return cached;
+    } catch (error) {
+      console.warn('Redis ranking signals cache read failed:', error);
+    }
+
+    const signals = await this.supabaseService.getUserReelsRankingSignals(userId);
+
+    try {
+      await this.redisService.setJson(cacheKey, signals, this.rankingSignalsTtl);
+    } catch (error) {
+      console.warn('Redis ranking signals cache write failed:', error);
+    }
+
+    return signals;
+  }
+
+  /** Keep the newest uploads visible even when personalized ranking reorders the feed. */
+  private pinFreshReels(ranked: any[], pool: any[], limit: number) {
+    const maxAgeMs = 6 * 60 * 60 * 1000;
+    const now = Date.now();
+    const fresh = pool
+      .filter((post) => {
+        const createdAt = post?.created_at
+          ? new Date(post.created_at).getTime()
+          : 0;
+        return createdAt > 0 && now - createdAt <= maxAgeMs;
+      })
+      .sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      )
+      .slice(0, 4);
+
+    const seen = new Set<string>();
+    const merged: any[] = [];
+    for (const post of [...fresh, ...ranked]) {
+      const id = post?.id?.toString();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      merged.push(post);
+      if (merged.length >= limit) break;
+    }
+    return merged;
   }
 
   /**
@@ -409,6 +564,8 @@ export class FeedService {
       await this.redisService.deletePattern('feed:reels:page1:*');
       await this.redisService.deletePattern('feed:reels:v2:*');
       await this.redisService.deletePattern('feed:reels:old_gems:*');
+      await this.redisService.deletePattern('feed:reels:personalized:*');
+      await this.redisService.deletePattern('feed:ranking:signals:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);
     }
@@ -494,6 +651,20 @@ export class FeedService {
       this.persistViewToSupabase(postId, userId).catch((err) =>
         console.warn('View persist to Supabase failed (non-critical):', err),
       );
+      if (userId) {
+        this.invalidatePersonalizedReelsForUser(userId).catch((err) =>
+          console.warn('Personalized reels cache bust failed (non-critical):', err),
+        );
+      }
+    }
+  }
+
+  private async invalidatePersonalizedReelsForUser(userId: string) {
+    try {
+      await this.redisService.deletePattern(`feed:reels:personalized:v1:${userId}:*`);
+      await this.redisService.del(`feed:ranking:signals:${userId}`);
+    } catch (error) {
+      console.warn('Redis personalized cache invalidation failed:', error);
     }
   }
 
