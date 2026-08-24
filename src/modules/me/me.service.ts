@@ -4,6 +4,7 @@ import * as admin from 'firebase-admin';
 import { FirebaseService } from '../../core/firebase/firebase.service';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
+import { FeedWarmService } from '../feed/feed-warm.service';
 
 export interface SessionBootstrap {
   canUseApp: boolean;
@@ -37,6 +38,7 @@ export class MeService {
     private readonly supabaseService: SupabaseService,
     private readonly firebaseService: FirebaseService,
     private readonly configService: ConfigService,
+    private readonly feedWarmService: FeedWarmService,
   ) {
     this.bootstrapTtl = this.configService.get<number>('CACHE_BOOTSTRAP_TTL', 90);
     this.communityUnreadTtl = this.configService.get<number>(
@@ -50,7 +52,10 @@ export class MeService {
 
     try {
       const cached = await this.redisService.getJson<SessionBootstrap>(cacheKey);
-      if (cached) return cached;
+      if (cached) {
+        this.feedWarmService.scheduleUserWarm(userId);
+        return cached;
+      }
     } catch (error) {
       console.warn('Redis bootstrap cache read failed:', error);
     }
@@ -128,6 +133,8 @@ export class MeService {
     } catch (error) {
       console.warn('Redis bootstrap cache write failed:', error);
     }
+
+    this.feedWarmService.scheduleUserWarm(userId);
 
     return bootstrap;
   }

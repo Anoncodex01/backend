@@ -9,6 +9,7 @@ import {
 import { Upload } from '@aws-sdk/lib-storage';
 import * as fs from 'fs';
 import { Readable } from 'stream';
+import { cacheControlForR2Key } from '../../core/cdn/r2-cache.util';
 
 @Injectable()
 export class R2Service {
@@ -43,6 +44,7 @@ export class R2Service {
         Body: fileStream,
         ContentType: contentType,
         ContentLength: stat.size,
+        CacheControl: cacheControlForR2Key(key),
       },
       queueSize: 4,
       partSize: 5 * 1024 * 1024,
@@ -59,6 +61,7 @@ export class R2Service {
       Key: key,
       Body: buffer,
       ContentType: contentType,
+      CacheControl: cacheControlForR2Key(key),
     }));
     return `${this.cdnUrl}/${key}`;
   }
@@ -71,10 +74,15 @@ export class R2Service {
         Key: key,
         Body: stream,
         ContentType: contentType,
+        CacheControl: cacheControlForR2Key(key),
       },
     });
     await upload.done();
     return `${this.cdnUrl}/${key}`;
+  }
+
+  cacheControlForKey(key: string): string {
+    return cacheControlForR2Key(key);
   }
 
   async deleteFile(key: string): Promise<void> {

@@ -116,7 +116,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 step "STEP 2 — Syncing files to $VPS_HOST:$APP_DIR"
 
-FILES=(src nginx package.json package-lock.json tsconfig.json nest-cli.json Dockerfile docker-compose.yml)
+FILES=(src nginx scripts package.json package-lock.json tsconfig.json nest-cli.json Dockerfile docker-compose.yml)
 for item in "${FILES[@]}"; do
   if [ -e "$item" ]; then
     echo "   → $item"

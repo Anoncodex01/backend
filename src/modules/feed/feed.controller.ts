@@ -11,6 +11,7 @@ import {
   DefaultValuePipe,
 } from '@nestjs/common';
 import { FeedService } from './feed.service';
+import { FeedWarmService } from './feed-warm.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AuthService } from '../auth/auth.service';
@@ -19,6 +20,7 @@ import { AuthService } from '../auth/auth.service';
 export class FeedController {
   constructor(
     private feedService: FeedService,
+    private feedWarmService: FeedWarmService,
     private authService: AuthService,
   ) {}
 
@@ -133,6 +135,44 @@ export class FeedController {
         hasMore: posts.length === limit,
       },
     };
+  }
+
+  /**
+   * GET /v1/feed/reels/warm
+   * Pre-build personalized reels + comment cache + CDN edge prefetch (DAR).
+   */
+  @Get('reels/warm')
+  @UseGuards(AuthGuard)
+  async warmReelsFeed(
+    @CurrentUser() user: any,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+  ) {
+    const safeLimit = Math.min(Math.max(limit, 1), 30);
+    const payload = await this.feedWarmService.warmUserReelsFeed(
+      user.sub,
+      safeLimit,
+    );
+
+    return {
+      success: true,
+      data: payload,
+      meta: {
+        count: payload.posts.length,
+        prefetchUrlCount: payload.prefetchUrls.length,
+        warmedAt: payload.warmedAt,
+      },
+    };
+  }
+
+  /**
+   * POST /v1/feed/reels/warm
+   * Fire-and-forget warm on app open (does not block UI).
+   */
+  @Post('reels/warm')
+  @UseGuards(AuthGuard)
+  async warmReelsFeedAsync(@CurrentUser() user: any) {
+    this.feedWarmService.scheduleUserWarm(user.sub);
+    return { success: true, message: 'Reels warm scheduled' };
   }
 
   /**
