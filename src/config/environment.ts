@@ -109,6 +109,11 @@ export const environment = {
 
   // Coin conversion rate (coins per 1 currency unit)
   coinRate: Number(process.env.COIN_RATE || '1'),
+
+  // Google Gemini (shop recommendations, captions, moderation)
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+  },
 };
 
 export type Environment = typeof environment;

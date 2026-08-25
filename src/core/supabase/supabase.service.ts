@@ -1286,6 +1286,52 @@ export class SupabaseService implements OnModuleInit {
     return data;
   }
 
+  async getUserInterestIds(userId: string): Promise<string[]> {
+    const { data, error } = await this.client
+      .from('user_interests')
+      .select('interest_id')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+    return (data || [])
+      .map((row: { interest_id?: string }) => row.interest_id)
+      .filter(Boolean) as string[];
+  }
+
+  async getProductRecommendationPool(options: {
+    limit?: number;
+    category?: string;
+  } = {}) {
+    const limit = Math.min(Math.max(options.limit ?? 60, 1), 120);
+
+    let query = this.client
+      .from('products')
+      .select(
+        `
+        *,
+        shops(*),
+        users:user_id(id, username, full_name, profile_image_url, is_verified)
+      `,
+      )
+      .eq('is_active', true)
+      .gt('quantity', 0)
+      .order('sold_count', { ascending: false })
+      .limit(limit);
+
+    if (options.category) {
+      query = query.eq('category', options.category);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return (data || []).filter(
+      (product: any) =>
+        product.shops != null &&
+        (typeof product.shops === 'object' || Array.isArray(product.shops)),
+    );
+  }
+
   async getShops(
     options: {
       limit?: number;

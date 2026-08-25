@@ -4,14 +4,23 @@ import {
   Param,
   Query,
   UseGuards,
+  Headers,
+  DefaultValuePipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { ShopService } from './shop.service';
+import { ShopRecommendationsService } from './shop-recommendations.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AuthService } from '../auth/auth.service';
 
 @Controller('shop')
 export class ShopController {
-  constructor(private shopService: ShopService) {}
+  constructor(
+    private shopService: ShopService,
+    private shopRecommendationsService: ShopRecommendationsService,
+    private authService: AuthService,
+  ) {}
 
   /**
    * GET /v1/shop/shops
@@ -65,6 +74,49 @@ export class ShopController {
         limit,
         offset,
         count: products.length,
+      },
+    };
+  }
+
+  /**
+   * GET /v1/shop/products/recommended
+   * Gemini-powered product recommendations (personalized when logged in).
+   */
+  @Get('products/recommended')
+  async getRecommendedProducts(
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query('category') category?: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // Continue as guest
+      }
+    }
+
+    const result = await this.shopRecommendationsService.getRecommendedProducts({
+      userId,
+      limit,
+      offset,
+      category,
+    });
+
+    return {
+      success: true,
+      data: result.products,
+      meta: {
+        limit,
+        offset,
+        count: result.products.length,
+        source: result.source,
+        personalized: !!userId,
+        interests: result.interests,
       },
     };
   }
