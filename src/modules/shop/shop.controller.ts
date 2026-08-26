@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Param,
   Query,
   UseGuards,
@@ -117,8 +118,41 @@ export class ShopController {
         source: result.source,
         personalized: !!userId,
         interests: result.interests,
+        behavior: userId
+          ? {
+              viewed: result.signals.viewed.length,
+              cart: result.signals.cart.length,
+              purchased: result.signals.purchased.length,
+              liked: result.signals.liked.length,
+            }
+          : null,
       },
     };
+  }
+
+  /**
+   * POST /v1/shop/products/:id/view
+   * Track product view for personalized recommendations.
+   */
+  @Post('products/:id/view')
+  @UseGuards(AuthGuard)
+  async recordProductView(
+    @Param('id') productId: string,
+    @CurrentUser() user: any,
+  ) {
+    await this.shopRecommendationsService.recordProductView(user.sub, productId);
+    return { success: true };
+  }
+
+  /**
+   * POST /v1/shop/recommendations/invalidate
+   * Clear cached recommendations after cart/checkout changes.
+   */
+  @Post('recommendations/invalidate')
+  @UseGuards(AuthGuard)
+  async invalidateRecommendations(@CurrentUser() user: any) {
+    await this.shopRecommendationsService.invalidateUserRecommendations(user.sub);
+    return { success: true };
   }
 
   /**

@@ -4,14 +4,18 @@ import {
   Param,
   Query,
   Post,
+  Body,
   UseGuards,
   Headers,
   ParseBoolPipe,
   ParseIntPipe,
   DefaultValuePipe,
+  ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import { FeedService } from './feed.service';
 import { FeedWarmService } from './feed-warm.service';
+import { ReelsAiService } from './reels-ai.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AuthService } from '../auth/auth.service';
@@ -21,6 +25,7 @@ export class FeedController {
   constructor(
     private feedService: FeedService,
     private feedWarmService: FeedWarmService,
+    private reelsAiService: ReelsAiService,
     private authService: AuthService,
   ) {}
 
@@ -230,6 +235,8 @@ export class FeedController {
       ? ((cursorPost as any)._feed_cursor || (cursorPost as any).created_at)
       : undefined;
 
+    const rankSource = (posts[0] as any)?._feed_rank_source as string | undefined;
+
     return {
       success: true,
       data: posts,
@@ -240,8 +247,183 @@ export class FeedController {
         hasMore: posts.length === safeLimit,
         nextCursor,
         mode: safeMode,
+        rankSource: rankSource ?? (userId ? 'rules' : 'global'),
+        personalized: !!userId && safeMode === 'reels',
       },
     };
+  }
+
+  /**
+   * GET /v1/feed/explore
+   * Explore grid (videos + images), AI-personalized when logged in.
+   */
+  @Get('explore')
+  async getExploreFeed(
+    @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
+    @Query('fresh') fresh?: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    let userId: string | undefined;
+    if (authHeader?.startsWith('Bearer ')) {
+      try {
+        const token = authHeader.replace('Bearer ', '');
+        const payload = await this.authService.verifySupabaseToken(token);
+        userId = payload.sub;
+      } catch {
+        // Continue as anonymous
+      }
+    }
+
+    const forceFresh = fresh === '1' || fresh?.toLowerCase() === 'true';
+    const safeLimit = Number.isFinite(Number(limit))
+      ? Math.min(Math.max(Number(limit), 1), 60)
+      : 30;
+    const safeOffset = Number.isFinite(Number(offset))
+      ? Math.max(Number(offset), 0)
+      : 0;
+
+    const posts = await this.feedService.getExploreFeed({
+      userId,
+      limit: safeLimit,
+      offset: safeOffset,
+      fresh: forceFresh,
+    });
+
+    const rankSource = (posts[0] as any)?._feed_rank_source as string | undefined;
+
+    return {
+      success: true,
+      data: posts,
+      meta: {
+        limit: safeLimit,
+        offset: safeOffset,
+        count: posts.length,
+        hasMore: posts.length === safeLimit,
+        rankSource: rankSource ?? (userId ? 'rules' : 'global'),
+        personalized: !!userId,
+      },
+    };
+  }
+
+  /**
+   * POST /v1/feed/reels/watch-event
+   * Track watch time for AI For You ranking.
+   */
+  @Post('reels/watch-event')
+  @UseGuards(AuthGuard)
+  async recordReelWatchEvent(
+    @CurrentUser() user: any,
+    @Body()
+    body: {
+      postId: string;
+      watchedMs: number;
+      durationMs: number;
+      completed?: boolean;
+    },
+  ) {
+    if (!body?.postId) {
+      return { success: false, message: 'postId required' };
+    }
+
+    const watchedMs = Math.max(0, Number(body.watchedMs) || 0);
+    const durationMs = Math.max(0, Number(body.durationMs) || 0);
+    const completed =
+      body.completed === true ||
+      (durationMs > 0 && watchedMs / durationMs >= 0.85);
+
+    await this.reelsAiService.recordWatchEvent({
+      userId: user.sub,
+      postId: body.postId,
+      watchedMs,
+      durationMs,
+      completed,
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * POST /v1/feed/reels/caption/suggest
+   * AI caption + hashtags for upload flow.
+   */
+  @Post('reels/caption/suggest')
+  @UseGuards(AuthGuard)
+  async suggestReelCaption(
+    @Body()
+    body: {
+      caption?: string;
+      locationName?: string;
+      hashtags?: string[];
+    },
+  ) {
+    if (!this.reelsAiService.isGeminiConfigured()) {
+      return {
+        success: false,
+        message: 'AI caption is temporarily unavailable. Try again later.',
+      };
+    }
+
+    const result = await this.reelsAiService.suggestCaption({
+      caption: body?.caption,
+      locationName: body?.locationName,
+      hashtags: body?.hashtags,
+      forUpload: true,
+    });
+
+    if (!result) {
+      return { success: false, message: 'Could not generate caption' };
+    }
+
+    return { success: true, data: result };
+  }
+
+  /**
+   * POST /v1/feed/reels/:postId/generate-caption
+   * AI caption for an existing reel (owner).
+   */
+  @Post('reels/:postId/generate-caption')
+  @UseGuards(AuthGuard)
+  async generateReelCaption(
+    @Param('postId') postId: string,
+    @CurrentUser() user: any,
+  ) {
+    const result = await this.reelsAiService.generateCaptionForPost(
+      postId,
+      user.sub,
+    );
+    if (!result) {
+      throw new ForbiddenException('Cannot generate caption for this reel');
+    }
+    return { success: true, data: result };
+  }
+
+  /**
+   * POST /v1/feed/reels/:postId/apply-caption
+   * Save AI caption to reel (owner).
+   */
+  @Post('reels/:postId/apply-caption')
+  @UseGuards(AuthGuard)
+  async applyReelCaption(
+    @Param('postId') postId: string,
+    @CurrentUser() user: any,
+    @Body() body: { caption: string; hashtags?: string[] },
+  ) {
+    const caption = body?.caption?.trim();
+    if (!caption) {
+      return { success: false, message: 'caption required' };
+    }
+
+    const ok = await this.reelsAiService.applyCaptionToPost(
+      postId,
+      user.sub,
+      caption,
+      body.hashtags ?? [],
+    );
+    if (!ok) {
+      throw new NotFoundException('Reel not found or not owned by you');
+    }
+    return { success: true };
   }
 
   /**

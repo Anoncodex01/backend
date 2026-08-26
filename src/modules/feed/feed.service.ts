@@ -6,6 +6,7 @@ import {
   rankReelsPosts,
   toRankingSignals,
 } from './feed-ranking.util';
+import { ReelsAiService } from './reels-ai.service';
 
 @Injectable()
 export class FeedService {
@@ -19,6 +20,7 @@ export class FeedService {
     private redisService: RedisService,
     private supabaseService: SupabaseService,
     private configService: ConfigService,
+    private reelsAiService: ReelsAiService,
   ) {
     this.feedTtl = this.configService.get('CACHE_FEED_TTL', 30);
     // Reduced from 120s → 30s so newly posted videos surface faster.
@@ -294,7 +296,7 @@ export class FeedService {
     const { userId, limit, offset, cursor, fresh, storageType } = options;
     const cursorKey = cursor || `offset:${offset}`;
     const cacheKey =
-      `feed:reels:personalized:v1:${userId}:${cursorKey}:${limit}` +
+      `feed:reels:personalized:v2:${userId}:${cursorKey}:${limit}` +
       `${storageType ? `:${storageType}` : ''}`;
 
     if (!fresh) {
@@ -329,6 +331,13 @@ export class FeedService {
     );
     ranked = this.pinFreshReels(ranked, candidatePool, limit);
 
+    const viewerProfile = await this.reelsAiService.buildViewerProfile(userId);
+    const geminiRanked = await this.reelsAiService.rerankPosts(
+      ranked,
+      viewerProfile,
+    );
+    ranked = geminiRanked.posts.slice(0, limit);
+
     const feedCursor =
       candidatePool[candidatePool.length - 1]?.created_at ||
       ranked[ranked.length - 1]?.created_at;
@@ -336,6 +345,7 @@ export class FeedService {
     let posts = ranked.map((post: any) => ({
       ...post,
       _feed_cursor: feedCursor,
+      _feed_rank_source: geminiRanked.source,
     }));
 
     if (posts.length > 0) {
@@ -349,6 +359,162 @@ export class FeedService {
     }
 
     return posts;
+  }
+
+  /**
+   * Explore grid: mixed videos + images, AI-personalized when logged in.
+   */
+  async getExploreFeed(options: {
+    userId?: string;
+    limit?: number;
+    offset?: number;
+    fresh?: boolean;
+  }) {
+    const limit = Math.min(Math.max(options.limit || 30, 1), 60);
+    const offset = Math.max(options.offset || 0, 0);
+    const fresh = options.fresh === true;
+
+    if (options.userId) {
+      return this.getPersonalizedExploreFeed({
+        userId: options.userId,
+        limit,
+        offset,
+        fresh,
+      });
+    }
+
+    const poolLimit = Math.min(Math.max(limit * 6, 120), 240);
+    const pool = await this.supabaseService.getReelsCandidatePool(
+      poolLimit,
+      offset,
+    );
+    return this.buildExploreGrid(pool, limit);
+  }
+
+  private async getPersonalizedExploreFeed(options: {
+    userId: string;
+    limit: number;
+    offset: number;
+    fresh: boolean;
+  }) {
+    const { userId, limit, offset, fresh } = options;
+    const cacheKey = `feed:explore:personalized:v1:${userId}:${offset}:${limit}`;
+
+    if (!fresh) {
+      try {
+        const cached = await this.redisService.getJson<any[]>(cacheKey);
+        if (cached) return cached;
+      } catch (error) {
+        console.warn('Redis personalized explore cache read failed:', error);
+      }
+    }
+
+    const poolLimit = Math.min(Math.max(limit * 6, 120), 240);
+    const [candidatePool, signalsRaw] = await Promise.all([
+      this.supabaseService.getReelsCandidatePool(poolLimit, offset),
+      this.getReelsRankingSignals(userId),
+    ]);
+
+    const signals = toRankingSignals(signalsRaw);
+    let ranked = rankReelsPosts(
+      candidatePool,
+      signals,
+      poolLimit,
+      (items, max) => this.supabaseService.diversifyByCreator(items, max),
+    );
+
+    const viewerProfile = await this.reelsAiService.buildViewerProfile(userId);
+    const geminiRanked = await this.reelsAiService.rerankPosts(
+      ranked,
+      viewerProfile,
+    );
+    ranked = geminiRanked.posts;
+
+    const posts = await this.buildExploreGrid(
+      ranked,
+      limit,
+      userId,
+      geminiRanked.source,
+    );
+
+    try {
+      await this.redisService.setJson(cacheKey, posts, this.personalizedReelsTtl);
+    } catch (error) {
+      console.warn('Redis personalized explore cache write failed:', error);
+    }
+
+    return posts;
+  }
+
+  private async buildExploreGrid(
+    pool: any[],
+    limit: number,
+    userId?: string,
+    rankSource?: string,
+  ) {
+    const videos = pool.filter((post) => this.isExploreVideoPost(post));
+    const images = pool.filter(
+      (post) => !this.isExploreVideoPost(post) && this.isExploreImagePost(post),
+    );
+    const interleaved = this.interleaveExplorePosts(videos, images, limit);
+    let posts = interleaved.map((post) => ({
+      ...post,
+      _feed_rank_source: rankSource ?? (userId ? 'rules' : 'global'),
+    }));
+
+    if (userId && posts.length > 0) {
+      posts = await this.enrichPostsWithUserStatus(posts, userId);
+    }
+
+    return posts;
+  }
+
+  private isExploreVideoPost(post: any): boolean {
+    const postType = (post?.post_type ?? '').toString().toLowerCase();
+    if (postType === 'video') return true;
+    return (
+      !!post?.video_url ||
+      !!post?.stream_uid ||
+      !!post?.video_path
+    );
+  }
+
+  private isExploreImagePost(post: any): boolean {
+    const imageUrls = post?.image_urls;
+    const imageUrl = post?.image_url;
+    const images = post?.images;
+    return (
+      (Array.isArray(imageUrls) && imageUrls.length > 0) ||
+      (imageUrl != null && imageUrl.toString().length > 0) ||
+      (Array.isArray(images) && images.length > 0)
+    );
+  }
+
+  private interleaveExplorePosts(
+    videos: any[],
+    images: any[],
+    limit: number,
+  ): any[] {
+    const out: any[] = [];
+    let videoIdx = 0;
+    let imageIdx = 0;
+    let pickVideo = true;
+
+    while (
+      out.length < limit &&
+      (videoIdx < videos.length || imageIdx < images.length)
+    ) {
+      if (pickVideo && videoIdx < videos.length) {
+        out.push(videos[videoIdx++]);
+      } else if (imageIdx < images.length) {
+        out.push(images[imageIdx++]);
+      } else if (videoIdx < videos.length) {
+        out.push(videos[videoIdx++]);
+      }
+      pickVideo = !pickVideo;
+    }
+
+    return out;
   }
 
   private async getReelsRankingSignals(userId: string) {
@@ -565,6 +731,7 @@ export class FeedService {
       await this.redisService.deletePattern('feed:reels:v2:*');
       await this.redisService.deletePattern('feed:reels:old_gems:*');
       await this.redisService.deletePattern('feed:reels:personalized:*');
+      await this.redisService.deletePattern('feed:explore:personalized:*');
       await this.redisService.deletePattern('feed:ranking:signals:*');
     } catch (error) {
       console.warn('Redis cache invalidation failed:', error);

@@ -890,6 +890,185 @@ export class SupabaseService implements OnModuleInit {
     };
   }
 
+  async getUserReelsAiSignals(userId: string): Promise<{
+    interestIds: string[];
+    viewedCaptions: string[];
+    likedCaptions: string[];
+    savedCaptions: string[];
+    completedCaptions: string[];
+    skippedPostIds: string[];
+  }> {
+    const empty = {
+      interestIds: [] as string[],
+      viewedCaptions: [] as string[],
+      likedCaptions: [] as string[],
+      savedCaptions: [] as string[],
+      completedCaptions: [] as string[],
+      skippedPostIds: [] as string[],
+    };
+
+    try {
+      const thirtyDaysAgo = new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000,
+      ).toISOString();
+
+      const [
+        interestsRes,
+        viewsRes,
+        likesRes,
+        savesRes,
+        watchRes,
+      ] = await Promise.all([
+        this.client
+          .from('user_interests')
+          .select('interest_id')
+          .eq('user_id', userId),
+        this.client
+          .from('post_views')
+          .select('post_id, posts(caption, description, hashtags, location_name)')
+          .eq('user_id', userId)
+          .gte('viewed_at', thirtyDaysAgo)
+          .order('viewed_at', { ascending: false })
+          .limit(40),
+        this.client
+          .from('post_likes')
+          .select('post_id, posts(caption, description, hashtags, location_name)')
+          .eq('user_id', userId)
+          .limit(25),
+        this.client
+          .from('post_saves')
+          .select('post_id, posts(caption, description, hashtags, location_name)')
+          .eq('user_id', userId)
+          .limit(20),
+        this.client
+          .from('reel_watch_events')
+          .select('post_id, watched_ms, duration_ms, completed, posts(caption, description)')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(80),
+      ]);
+
+      const captionFromPost = (post: any): string | null => {
+        if (!post) return null;
+        const caption = (post.caption ?? post.description ?? '').toString().trim();
+        if (caption) return caption.slice(0, 160);
+        const tags = Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '';
+        return tags ? tags.slice(0, 160) : null;
+      };
+
+      const interestIds = (interestsRes.data || [])
+        .map((row: any) => row.interest_id?.toString())
+        .filter(Boolean);
+
+      const viewedCaptions = (viewsRes.data || [])
+        .map((row: any) => captionFromPost(row.posts))
+        .filter(Boolean) as string[];
+
+      const likedCaptions = (likesRes.data || [])
+        .map((row: any) => captionFromPost(row.posts))
+        .filter(Boolean) as string[];
+
+      const savedCaptions = (savesRes.data || [])
+        .map((row: any) => captionFromPost(row.posts))
+        .filter(Boolean) as string[];
+
+      const completedCaptions: string[] = [];
+      const skippedPostIds: string[] = [];
+
+      for (const row of watchRes.data || []) {
+        const postId = row.post_id?.toString();
+        const watchedMs = Number(row.watched_ms) || 0;
+        const durationMs = Number(row.duration_ms) || 0;
+        const completed = row.completed === true;
+        const caption = captionFromPost(row.posts);
+
+        if (completed && caption) {
+          completedCaptions.push(caption);
+        } else if (
+          postId &&
+          durationMs > 0 &&
+          watchedMs / durationMs < 0.25 &&
+          watchedMs < 3000
+        ) {
+          skippedPostIds.push(postId);
+        }
+      }
+
+      return {
+        interestIds,
+        viewedCaptions,
+        likedCaptions,
+        savedCaptions,
+        completedCaptions,
+        skippedPostIds: [...new Set(skippedPostIds)],
+      };
+    } catch {
+      return empty;
+    }
+  }
+
+  async recordReelWatchEvent(input: {
+    userId: string;
+    postId: string;
+    watchedMs: number;
+    durationMs: number;
+    completed: boolean;
+  }): Promise<void> {
+    try {
+      await this.client.from('reel_watch_events').insert({
+        user_id: input.userId,
+        post_id: input.postId,
+        watched_ms: Math.max(0, Math.round(input.watchedMs)),
+        duration_ms: Math.max(0, Math.round(input.durationMs)),
+        completed: input.completed,
+      });
+    } catch {
+      // Table may not exist until migration is applied.
+    }
+  }
+
+  async getPostForAiCaption(postId: string) {
+    const { data, error } = await this.client
+      .from('posts')
+      .select(
+        'id, user_id, caption, description, hashtags, location_name, users(username)',
+      )
+      .eq('id', postId)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data;
+  }
+
+  async updatePostCaption(
+    postId: string,
+    userId: string,
+    caption: string,
+    hashtags: string[],
+  ): Promise<boolean> {
+    const { data: existing, error: readError } = await this.client
+      .from('posts')
+      .select('id, user_id')
+      .eq('id', postId)
+      .maybeSingle();
+
+    if (readError || !existing || existing.user_id?.toString() !== userId) {
+      return false;
+    }
+
+    const { error } = await this.client
+      .from('posts')
+      .update({
+        caption,
+        hashtags,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', postId)
+      .eq('user_id', userId);
+
+    return !error;
+  }
+
   private async fetchReelsCandidateRows(
     poolLimit: number,
     offset: number,
@@ -1296,6 +1475,176 @@ export class SupabaseService implements OnModuleInit {
     return (data || [])
       .map((row: { interest_id?: string }) => row.interest_id)
       .filter(Boolean) as string[];
+  }
+
+  private mapProductSignal(row: any): {
+    id: string;
+    name: string;
+    category: string | null;
+    price: number | null;
+  } | null {
+    const product = row?.products ?? row?.product ?? row;
+    if (!product?.id) return null;
+    return {
+      id: product.id,
+      name: product.name?.toString() ?? 'Product',
+      category: product.category?.toString() ?? null,
+      price: product.price != null ? Number(product.price) : null,
+    };
+  }
+
+  async getUserShopSignals(userId: string): Promise<{
+    viewed: Array<{
+      id: string;
+      name: string;
+      category: string | null;
+      price: number | null;
+    }>;
+    cart: Array<{
+      id: string;
+      name: string;
+      category: string | null;
+      price: number | null;
+    }>;
+    purchased: Array<{
+      id: string;
+      name: string;
+      category: string | null;
+      price: number | null;
+    }>;
+    liked: Array<{
+      id: string;
+      name: string;
+      category: string | null;
+      price: number | null;
+    }>;
+  }> {
+    const empty = {
+      viewed: [] as Array<{
+        id: string;
+        name: string;
+        category: string | null;
+        price: number | null;
+      }>,
+      cart: [] as Array<{
+        id: string;
+        name: string;
+        category: string | null;
+        price: number | null;
+      }>,
+      purchased: [] as Array<{
+        id: string;
+        name: string;
+        category: string | null;
+        price: number | null;
+      }>,
+      liked: [] as Array<{
+        id: string;
+        name: string;
+        category: string | null;
+        price: number | null;
+      }>,
+    };
+
+    try {
+      const [viewsRes, cartRes, likesRes, ordersRes] = await Promise.all([
+        this.client
+          .from('user_product_views')
+          .select('product_id, last_viewed_at, products(id, name, category, price)')
+          .eq('user_id', userId)
+          .order('last_viewed_at', { ascending: false })
+          .limit(15),
+        this.client
+          .from('cart_items')
+          .select('product_id, products(id, name, category, price)')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(10),
+        this.client
+          .from('product_likes')
+          .select('product_id, products(id, name, category, price)')
+          .eq('user_id', userId)
+          .limit(10),
+        this.client
+          .from('orders')
+          .select(
+            'id, status, created_at, order_items(product_id, products(id, name, category, price))',
+          )
+          .eq('buyer_id', userId)
+          .not('status', 'eq', 'cancelled')
+          .order('created_at', { ascending: false })
+          .limit(8),
+      ]);
+
+      const viewed = (viewsRes.data || [])
+        .map((row) => this.mapProductSignal(row))
+        .filter(Boolean) as typeof empty.viewed;
+
+      const cart = (cartRes.data || [])
+        .map((row) => this.mapProductSignal(row))
+        .filter(Boolean) as typeof empty.cart;
+
+      const liked = (likesRes.data || [])
+        .map((row) => this.mapProductSignal(row))
+        .filter(Boolean) as typeof empty.liked;
+
+      const purchased: typeof empty.purchased = [];
+      for (const order of ordersRes.data || []) {
+        for (const item of order.order_items || []) {
+          const signal = this.mapProductSignal(item);
+          if (signal && !purchased.some((p) => p.id === signal.id)) {
+            purchased.push(signal);
+          }
+        }
+      }
+
+      return { viewed, cart, purchased, liked };
+    } catch (error) {
+      // Table may not exist until migration is applied — fall back gracefully.
+      return empty;
+    }
+  }
+
+  async recordUserProductView(userId: string, productId: string): Promise<void> {
+    const { data: product } = await this.client
+      .from('products')
+      .select('views_count')
+      .eq('id', productId)
+      .maybeSingle();
+
+    if (product) {
+      await this.client
+        .from('products')
+        .update({ views_count: (product.views_count ?? 0) + 1 })
+        .eq('id', productId);
+    }
+
+    try {
+      const { data: existing } = await this.client
+        .from('user_product_views')
+        .select('id, view_count')
+        .eq('user_id', userId)
+        .eq('product_id', productId)
+        .maybeSingle();
+
+      if (existing) {
+        await this.client
+          .from('user_product_views')
+          .update({
+            view_count: (existing.view_count ?? 0) + 1,
+            last_viewed_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+      } else {
+        await this.client.from('user_product_views').insert({
+          user_id: userId,
+          product_id: productId,
+          view_count: 1,
+        });
+      }
+    } catch {
+      // user_product_views table may not exist until migration runs.
+    }
   }
 
   async getProductRecommendationPool(options: {

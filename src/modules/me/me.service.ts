@@ -64,7 +64,7 @@ export class MeService {
 
     const [
       userRow,
-      followingIds,
+      followingResult,
       blockedByMe,
       blockedMe,
       notificationUnread,
@@ -76,13 +76,29 @@ export class MeService {
         )
         .eq('id', userId)
         .maybeSingle(),
-      this.supabaseService.getFollowingIds(userId),
+      client
+        .from('follows')
+        .select('following_id')
+        .eq('follower_id', userId),
       client.from('blocked_users').select('blocked_user_id').eq('user_id', userId),
       client.from('blocked_users').select('user_id').eq('blocked_user_id', userId),
       this.getNotificationUnreadCount(userId),
     ]);
 
     const user = userRow.data;
+    if (userRow.error) {
+      console.warn('Session bootstrap user lookup failed:', userRow.error.message);
+    }
+
+    let followingIds: string[] = [];
+    if (followingResult.error) {
+      console.warn('Session bootstrap following lookup failed:', followingResult.error.message);
+    } else {
+      followingIds = (followingResult.data || [])
+        .map((row: { following_id?: string }) => row.following_id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    }
+
     const blockedUserIds = [
       ...(blockedByMe.data || []).map((r: any) => r.blocked_user_id),
       ...(blockedMe.data || []).map((r: any) => r.user_id),

@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { JwtModule } from '@nestjs/jwt';
 
 // Core modules
+import { GeminiModule } from './core/gemini/gemini.module';
 import { RedisModule } from './core/redis/redis.module';
 import { SupabaseModule } from './core/supabase/supabase.module';
 import { FirebaseModule } from './core/firebase/firebase.module';
@@ -49,6 +50,7 @@ import { LegalController } from './legal.controller';
     JwtModule.register({}),
 
     // Core
+    GeminiModule,
     RedisModule,
     SupabaseModule,
     FirebaseModule,

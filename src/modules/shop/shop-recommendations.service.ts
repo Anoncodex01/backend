@@ -1,13 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
-import { GeminiService } from './gemini.service';
+import { GeminiService } from '../../core/gemini/gemini.service';
+import { UserShopSignals } from './shop-signals.types';
 
 @Injectable()
 export class ShopRecommendationsService {
   private readonly logger = new Logger(ShopRecommendationsService.name);
   private readonly poolSize = 60;
-  private readonly embedCacheTtl = 60 * 60 * 24 * 7; // 7 days
+  private readonly embedCacheTtl = 60 * 60 * 24 * 7;
 
   constructor(
     private supabaseService: SupabaseService,
@@ -23,7 +24,7 @@ export class ShopRecommendationsService {
   }) {
     const limit = Math.min(Math.max(options.limit ?? 20, 1), 50);
     const offset = Math.max(options.offset ?? 0, 0);
-    const cacheKey = `shop:rec:v1:${options.userId || 'guest'}:${options.category || 'all'}:${limit}:${offset}`;
+    const cacheKey = `shop:rec:v2:${options.userId || 'guest'}:${options.category || 'all'}:${limit}:${offset}`;
 
     return this.redisService.getOrSet(
       cacheKey,
@@ -31,6 +32,10 @@ export class ShopRecommendationsService {
         const interests = options.userId
           ? await this.supabaseService.getUserInterestIds(options.userId)
           : [];
+
+        const signals = options.userId
+          ? await this.supabaseService.getUserShopSignals(options.userId)
+          : this.emptySignals();
 
         const pool = await this.supabaseService.getProductRecommendationPool({
           limit: this.poolSize,
@@ -42,30 +47,46 @@ export class ShopRecommendationsService {
             products: [] as Record<string, any>[],
             source: 'empty' as const,
             interests,
+            signals,
           };
         }
 
-        const ranked = await this.rankProducts(pool, interests);
+        const ranked = await this.rankProducts(pool, interests, signals);
         const page = ranked.products.slice(offset, offset + limit);
 
         return {
           products: page,
           source: ranked.source,
           interests,
+          signals,
         };
       },
       120,
     );
   }
 
+  async recordProductView(userId: string, productId: string): Promise<void> {
+    await this.supabaseService.recordUserProductView(userId, productId);
+    await this.invalidateUserRecommendations(userId);
+  }
+
+  async invalidateUserRecommendations(userId: string): Promise<void> {
+    await this.redisService.deletePattern(`shop:rec:v2:${userId}:*`);
+  }
+
+  private emptySignals(): UserShopSignals {
+    return { viewed: [], cart: [], purchased: [], liked: [] };
+  }
+
   private async rankProducts(
     products: Record<string, any>[],
     interests: string[],
+    signals: UserShopSignals,
   ): Promise<{ products: Record<string, any>[]; source: 'gemini' | 'rules' }> {
     const withRules = products
       .map((product) => ({
         product,
-        score: this.ruleScore(product, interests),
+        score: this.ruleScore(product, interests, signals),
       }))
       .sort((a, b) => b.score - a.score);
 
@@ -77,7 +98,7 @@ export class ShopRecommendationsService {
     }
 
     try {
-      const profileText = this.buildProfileText(interests);
+      const profileText = this.buildProfileText(interests, signals);
       const profileEmbedding = await this.geminiService.embedText(profileText);
 
       if (!profileEmbedding) {
@@ -104,8 +125,8 @@ export class ShopRecommendationsService {
           const semantic = embedding
             ? GeminiService.cosineSimilarity(profileEmbedding, embedding)
             : 0;
-          const rules = this.ruleScore(product, interests);
-          const score = semantic * 0.65 + rules * 0.35;
+          const rules = this.ruleScore(product, interests, signals);
+          const score = semantic * 0.6 + rules * 0.4;
           return { product, score };
         })
         .sort((a, b) => b.score - a.score);
@@ -148,11 +169,51 @@ export class ShopRecommendationsService {
     return embedding;
   }
 
-  private buildProfileText(interests: string[]): string {
-    if (interests.length === 0) {
-      return 'Shopper in Tanzania looking for trending products, deals, and popular items.';
+  private buildProfileText(
+    interests: string[],
+    signals: UserShopSignals,
+  ): string {
+    const parts = ['Shopper in Tanzania.'];
+
+    if (interests.length > 0) {
+      parts.push(`Interests: ${interests.join(', ')}.`);
     }
-    return `Shopper in Tanzania interested in: ${interests.join(', ')}.`;
+
+    if (signals.purchased.length > 0) {
+      parts.push(
+        `Previously purchased: ${this.formatSignals(signals.purchased)}.`,
+      );
+    }
+
+    if (signals.cart.length > 0) {
+      parts.push(`Currently in cart: ${this.formatSignals(signals.cart)}.`);
+    }
+
+    if (signals.liked.length > 0) {
+      parts.push(`Liked products: ${this.formatSignals(signals.liked)}.`);
+    }
+
+    if (signals.viewed.length > 0) {
+      parts.push(`Recently viewed: ${this.formatSignals(signals.viewed)}.`);
+    }
+
+    if (parts.length === 1) {
+      parts.push('Looking for trending products, deals, and popular items.');
+    }
+
+    return parts.join(' ');
+  }
+
+  private formatSignals(
+    signals: UserShopSignals['viewed'],
+  ): string {
+    return signals
+      .slice(0, 8)
+      .map((item) => {
+        const category = item.category ? ` (${item.category})` : '';
+        return `${item.name}${category}`;
+      })
+      .join(', ');
   }
 
   private productText(product: Record<string, any>): string {
@@ -163,7 +224,12 @@ export class ShopRecommendationsService {
     return `${name}. ${description}. Category: ${category}. Price: ${price} TZS.`;
   }
 
-  private ruleScore(product: Record<string, any>, interests: string[]): number {
+  private ruleScore(
+    product: Record<string, any>,
+    interests: string[],
+    signals: UserShopSignals,
+  ): number {
+    const productId = product.id?.toString() ?? '';
     const category = (product.category?.toString() ?? '').toLowerCase();
     const name = (product.name?.toString() ?? '').toLowerCase();
     const description = (product.description?.toString() ?? '').toLowerCase();
@@ -176,7 +242,38 @@ export class ShopRecommendationsService {
         name.includes(token) ||
         description.includes(token)
       ) {
-        interestBoost += 0.25;
+        interestBoost += 0.2;
+      }
+    }
+
+    let behaviorBoost = 0;
+    const purchasedIds = new Set(signals.purchased.map((s) => s.id));
+    const cartIds = new Set(signals.cart.map((s) => s.id));
+    const likedIds = new Set(signals.liked.map((s) => s.id));
+    const viewedIds = new Set(signals.viewed.map((s) => s.id));
+
+    if (purchasedIds.has(productId)) {
+      behaviorBoost -= 0.35;
+    } else if (cartIds.has(productId)) {
+      behaviorBoost += 0.45;
+    } else if (likedIds.has(productId)) {
+      behaviorBoost += 0.35;
+    } else if (viewedIds.has(productId)) {
+      behaviorBoost += 0.2;
+    }
+
+    const signalCategories = [
+      ...signals.purchased,
+      ...signals.cart,
+      ...signals.liked,
+      ...signals.viewed,
+    ]
+      .map((s) => (s.category ?? '').toLowerCase())
+      .filter(Boolean);
+
+    for (const signalCategory of signalCategories) {
+      if (category && category.includes(signalCategory)) {
+        behaviorBoost += 0.12;
       }
     }
 
@@ -195,6 +292,12 @@ export class ShopRecommendationsService {
     const quantity = Number(product.quantity ?? 0);
     const inStockBoost = quantity > 0 ? 0.1 : -1;
 
-    return interestBoost + popularity * 0.35 + recency * 0.15 + inStockBoost;
+    return (
+      interestBoost +
+      behaviorBoost +
+      popularity * 0.25 +
+      recency * 0.1 +
+      inStockBoost
+    );
   }
 }

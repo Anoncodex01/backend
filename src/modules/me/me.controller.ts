@@ -13,8 +13,8 @@ export class MeController {
    */
   @Get('session-bootstrap')
   @UseGuards(AuthGuard)
-  async getSessionBootstrap(@CurrentUser() user: any) {
-    const data = await this.meService.getSessionBootstrap(user.sub);
+  async getSessionBootstrap(@CurrentUser() userId: string) {
+    const data = await this.meService.getSessionBootstrap(userId);
     return {
       success: true,
       data,
@@ -27,8 +27,8 @@ export class MeController {
    */
   @Post('session-bootstrap/invalidate')
   @UseGuards(AuthGuard)
-  async invalidateSessionBootstrap(@CurrentUser() user: any) {
-    await this.meService.invalidateBootstrap(user.sub);
+  async invalidateSessionBootstrap(@CurrentUser() userId: string) {
+    await this.meService.invalidateBootstrap(userId);
     return { success: true };
   }
 
@@ -38,8 +38,8 @@ export class MeController {
    */
   @Get('community-unread')
   @UseGuards(AuthGuard)
-  async getCommunityUnread(@CurrentUser() user: any) {
-    const unread = await this.meService.getCommunityUnread(user.sub);
+  async getCommunityUnread(@CurrentUser() userId: string) {
+    const unread = await this.meService.getCommunityUnread(userId);
     return {
       success: true,
       data: { unread },
