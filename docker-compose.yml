@@ -51,6 +51,12 @@ services:
       - whapvibez-upload-tmp:/tmp/whapvibez-uploads
     networks:
       - whapvibez-network
+    healthcheck:
+      test: ["CMD-SHELL", "ps | grep -v grep | grep -q 'node dist/worker/main.js'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # ===== Redis Cache =====
   redis:
