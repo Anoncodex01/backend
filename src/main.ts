@@ -60,7 +60,9 @@ async function bootstrap() {
 
   // Start server
   const port = configService.get('PORT', 3000);
-  await app.listen(port);
+  const server = await app.listen(port);
+  server.requestTimeout = 30 * 60 * 1000;
+  server.headersTimeout = 31 * 60 * 1000;
 
   console.log(`
 ╔═══════════════════════════════════════════════════════════╗

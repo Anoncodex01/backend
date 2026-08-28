@@ -66,6 +66,9 @@ const VIDEO_EXTENSIONS = new Set([
   '.mpg',
 ]);
 
+const MAX_VIDEO_UPLOAD_MB = Number(process.env.MAX_VIDEO_UPLOAD_MB || 700);
+const MAX_VIDEO_UPLOAD_BYTES = MAX_VIDEO_UPLOAD_MB * 1024 * 1024;
+
 function isVideoUpload(file: { mimetype?: string; originalname?: string }): boolean {
   if (file.mimetype?.startsWith('video/')) return true;
 
@@ -117,7 +120,7 @@ export class MediaController {
           cb(null, `${uuidv4()}${extname(file.originalname)}`);
         },
       }),
-      limits: { fileSize: 300 * 1024 * 1024 },
+      limits: { fileSize: MAX_VIDEO_UPLOAD_BYTES },
       fileFilter: (_req, file, cb) => {
         if (isVideoUpload(file)) {
           cb(null, true);
