@@ -53,6 +53,26 @@ function parseHashtags(raw: unknown): string[] {
   return text.split(',').map((tag) => tag.trim()).filter(Boolean);
 }
 
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.webm',
+  '.avi',
+  '.mkv',
+  '.3gp',
+  '.3g2',
+  '.mpeg',
+  '.mpg',
+]);
+
+function isVideoUpload(file: { mimetype?: string; originalname?: string }): boolean {
+  if (file.mimetype?.startsWith('video/')) return true;
+
+  const extension = extname(file.originalname || '').toLowerCase();
+  return VIDEO_EXTENSIONS.has(extension);
+}
+
 class UploadVideoDto {
   @IsOptional() @IsString() caption?: string;
   @IsOptional() @IsString() locationName?: string;
@@ -99,7 +119,7 @@ export class MediaController {
       }),
       limits: { fileSize: 300 * 1024 * 1024 },
       fileFilter: (_req, file, cb) => {
-        if (file.mimetype.startsWith('video/')) {
+        if (isVideoUpload(file)) {
           cb(null, true);
         } else {
           cb(new BadRequestException('Only video files are allowed'), false);
