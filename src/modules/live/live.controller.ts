@@ -1,15 +1,16 @@
 import {
+  BadRequestException,
+  Body,
   Controller,
   Get,
-  Post,
-  Patch,
-  Param,
-  Body,
   Headers,
-  UseGuards,
   Logger,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
 } from '@nestjs/common';
-import { IsString, IsBoolean, IsOptional } from 'class-validator';
+import { IsBoolean, IsOptional, IsString } from 'class-validator';
 import { LiveService } from './live.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -21,16 +22,30 @@ class StartLiveDto {
 }
 
 class LiveTokenDto {
+  @IsOptional()
   @IsString()
-  channelName: string;
+  liveID?: string;
 
+  @IsOptional()
+  @IsString()
+  channelName?: string;
+
+  @IsOptional()
   @IsBoolean()
-  isHost: boolean;
+  isHost?: boolean;
 }
 
 class AudienceLiveTokenDto {
+  @IsOptional()
   @IsString()
-  channelName: string;
+  liveID?: string;
+
+  @IsOptional()
+  @IsString()
+  channelName?: string;
+
+  @IsString()
+  userID: string;
 }
 
 class AdminCommentsDto {
@@ -121,22 +136,26 @@ export class LiveController {
 
   /**
    * POST /v1/live/token
-   * Generate Agora RTC token for a channel
+   * Generate a ZEGO Token04 for Live Streaming Kit.
    */
   @Post('token')
   @UseGuards(AuthGuard)
   async getToken(@CurrentUser() userId: string, @Body() dto: LiveTokenDto) {
+    const liveId = dto.liveID || dto.channelName;
+    if (!liveId) {
+      throw new BadRequestException('liveID is required');
+    }
     const rawIsHost = (dto as { isHost?: unknown }).isHost;
     const isHost =
       rawIsHost === true ||
       (typeof rawIsHost === 'string' && rawIsHost.toLowerCase() === 'true');
 
     this.logger.log(
-      `Agora token request channel=${dto.channelName} user=${userId} role=${isHost ? 'publisher' : 'subscriber'} rawIsHost=${rawIsHost}`,
+      `ZEGO token request live=${liveId} user=${userId} host=${isHost}`,
     );
 
     const result = await this.liveService.generateToken({
-      channelName: dto.channelName,
+      channelName: liveId,
       userId,
       isHost,
     });
@@ -149,12 +168,17 @@ export class LiveController {
 
   /**
    * POST /v1/live/token/audience
-   * Generate a subscriber-only token for an active live channel.
+   * Guest-safe ZEGO token for watching a live (userID must match the kit userID).
    */
   @Post('token/audience')
   async getAudienceToken(@Body() dto: AudienceLiveTokenDto) {
+    const liveId = dto.liveID || dto.channelName;
+    if (!liveId) {
+      throw new BadRequestException('liveID is required');
+    }
     const result = await this.liveService.generateAudienceToken(
-      dto.channelName,
+      liveId,
+      dto.userID,
     );
 
     return {

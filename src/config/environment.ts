@@ -31,6 +31,13 @@ export const environment = {
     password: process.env.REDIS_PASSWORD || undefined,
   },
 
+  // ZEGOCLOUD Live Streaming
+  zego: {
+    appId: process.env.ZEGO_APP_ID || '1495665265',
+    serverSecret: process.env.ZEGO_SERVER_SECRET || '',
+    appSign: process.env.ZEGO_APP_SIGN || '',
+  },
+
   // Agora
   agora: {
     appId: process.env.AGORA_APP_ID || '',

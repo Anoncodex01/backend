@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 import { RedisService } from '../../core/redis/redis.service';
 import { SupabaseService } from '../../core/supabase/supabase.service';
 import { FirebaseService } from '../../core/firebase/firebase.service';
-import { AgoraService } from './agora.service';
+import { ZegoService } from './zego.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -66,9 +66,9 @@ export class LiveService {
     private redisService: RedisService,
     private supabaseService: SupabaseService,
     private firebaseService: FirebaseService,
-    private agoraService: AgoraService,
     private notificationsService: NotificationsService,
     private configService: ConfigService,
+    private zegoService: ZegoService,
   ) {}
 
   private assertAdminSecret(secret?: string) {
@@ -136,6 +136,19 @@ export class LiveService {
         'This live title appears to violate community guidelines. Please edit it and try again.',
       );
     }
+  }
+
+  private sanitizeZegoId(raw: string) {
+    const cleaned = (raw || '').replace(/[^A-Za-z0-9_]/g, '');
+    if (!cleaned) return 'user';
+    if (cleaned.length <= 32) return cleaned;
+    let hash = 2166136261;
+    for (let i = 0; i < cleaned.length; i += 1) {
+      hash ^= cleaned.charCodeAt(i);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    const suffix = hash.toString(16).padStart(8, '0');
+    return `${cleaned.slice(0, 24)}${suffix}`;
   }
 
   private buildAgoraUid(userId: string) {
@@ -248,14 +261,15 @@ export class LiveService {
     this.validateLiveTitle(data.title);
     const channelName = `live_${uuidv4().substring(0, 8)}`;
     const hostAgoraUid = this.buildAgoraUid(data.hostId);
+    const zegoUserId = this.sanitizeZegoId(data.hostId);
+    const liveId = this.sanitizeZegoId(channelName);
 
-    // Generate Agora tokens
-    const hostToken = this.agoraService.generateRtcToken(
-      channelName,
-      hostAgoraUid,
-      'publisher',
-      86400, // 24 hours
-    );
+    const issued = this.zegoService.generateToken({
+      userId: zegoUserId,
+      liveId,
+      canPublish: true,
+      expireSeconds: 3600,
+    });
 
     // Create session in database
     const session = await this.supabaseService.createLiveSession({
@@ -282,9 +296,12 @@ export class LiveService {
     return {
       session,
       channelName,
-      token: hostToken,
+      token: issued.token,
       uid: hostAgoraUid,
-      appId: this.agoraService.getAppId(),
+      appId: String(issued.appId),
+      userID: zegoUserId,
+      liveID: liveId,
+      expireSeconds: issued.expireSeconds,
     };
   }
 
@@ -304,12 +321,14 @@ export class LiveService {
     const viewerAgoraUid = this.buildAgoraUid(data.userId);
 
     // Generate viewer token
-    const token = this.agoraService.generateRtcToken(
-      session?.channel_name || '',
-      viewerAgoraUid,
-      'subscriber',
-      7200, // 2 hours
-    );
+    const zegoUserId = this.sanitizeZegoId(data.userId);
+    const liveId = this.sanitizeZegoId(session?.channel_name || data.sessionId);
+    const issued = this.zegoService.generateToken({
+      userId: zegoUserId,
+      liveId,
+      canPublish: false,
+      expireSeconds: 3600,
+    });
 
     // Add to viewers set
     await this.redisService.sadd(
@@ -327,10 +346,13 @@ export class LiveService {
     );
 
     return {
-      token,
+      token: issued.token,
       uid: viewerAgoraUid,
-      appId: this.agoraService.getAppId(),
+      appId: String(issued.appId),
+      userID: zegoUserId,
+      liveID: liveId,
       channelName: session?.channel_name,
+      expireSeconds: issued.expireSeconds,
       viewerCount,
     };
   }
@@ -461,7 +483,7 @@ export class LiveService {
   }
 
   /**
-   * Generate Agora RTC token for a channel
+   * Generate a ZEGO Token04 for Live Streaming Kit login.
    */
   async generateToken(data: {
     channelName: string;
@@ -469,93 +491,97 @@ export class LiveService {
     isHost: boolean;
   }) {
     const isHost = data.isHost === true;
-    // Cache key is unique per user + channel + role so UIDs never collide.
-    // TTL is 5 min less than the Agora token expiry so we never serve an
-    // already-expired token from cache.
-    // v2 intentionally bypasses older cached tokens that may have been issued
-    // before host/co-host role handling was corrected.
-    const cacheRole = isHost ? 'publisher' : 'subscriber';
-    const cacheKey = `live:token:v2:${data.channelName}:${data.userId}:${cacheRole}`;
-    const cacheTtl = isHost ? 82800 : 6300; // 23 h for host, 105 min for viewer
+    const liveId = this.sanitizeZegoId(data.channelName);
+    const zegoUserId = this.sanitizeZegoId(data.userId);
+    const expireSeconds = 3600;
+    const cacheRole = isHost ? 'host' : 'audience';
+    const cacheKey = `live:zego:token:v2:${liveId}:${zegoUserId}:${cacheRole}`;
+    const cacheTtl = expireSeconds - 120;
 
-    // --- Cache read ---
     try {
       const cached = await this.redisService.getJson<{
         token: string;
-        uid: number;
-        appId: string;
-        channelName: string;
+        appId: number;
+        liveID: string;
+        userID: string;
+        expireSeconds: number;
       }>(cacheKey);
-      if (cached) {
-        this.logger.debug(
-          `⚡ Token cache hit: ${data.channelName} (role: ${cacheRole})`,
-        );
-        return cached;
+      if (cached?.token) {
+        this.logger.debug(`ZEGO token cache hit ${liveId} ${cacheRole}`);
+        const effectsAppSign = this.zegoService.getAppSign();
+        return effectsAppSign
+          ? { ...cached, appSign: effectsAppSign }
+          : cached;
       }
     } catch {
-      // Redis unavailable — fall through and generate fresh token
+      // Redis unavailable
     }
 
-    // --- Generate ---
+    const issued = this.zegoService.generateToken({
+      userId: zegoUserId,
+      liveId,
+      canPublish: true,
+      expireSeconds,
+    });
+
+    const result: {
+      token: string;
+      appId: number;
+      liveID: string;
+      userID: string;
+      expireSeconds: number;
+      role: string;
+      channelName: string;
+      appSign?: string;
+    } = {
+      token: issued.token,
+      appId: issued.appId,
+      liveID: liveId,
+      userID: zegoUserId,
+      expireSeconds: issued.expireSeconds,
+      role: cacheRole,
+      channelName: liveId,
+    };
+
+    const effectsAppSign = this.zegoService.getAppSign();
+    if (effectsAppSign) {
+      result.appSign = effectsAppSign;
+    }
+
     try {
-      const role = isHost ? 'publisher' : 'subscriber';
-      const expirationSeconds = isHost ? 86400 : 7200;
-      const agoraUid = this.buildAgoraUid(data.userId);
-
-      const token = this.agoraService.generateRtcToken(
-        data.channelName,
-        agoraUid,
-        role,
-        expirationSeconds,
+      await this.redisService.setJson(
+        cacheKey,
+        {
+          token: result.token,
+          appId: result.appId,
+          liveID: result.liveID,
+          userID: result.userID,
+          expireSeconds: result.expireSeconds,
+          role: result.role,
+          channelName: result.channelName,
+        },
+        cacheTtl,
       );
-
-      const result = {
-        token,
-        uid: agoraUid,
-        appId: this.agoraService.getAppId(),
-        channelName: data.channelName,
-        role,
-      };
-
-      // --- Cache write (non-critical) ---
-      try {
-        await this.redisService.setJson(cacheKey, result, cacheTtl);
-      } catch {
-        // Redis write failed — continue without cache
-      }
-
-      this.logger.log(
-        `✅ Token generated: ${data.channelName} (role: ${role}, uid: ${agoraUid})`,
-      );
-      return result;
-    } catch (error) {
-      this.logger.error(`❌ Error generating token: ${error}`);
-      throw error;
+    } catch {
+      // ignore cache write
     }
+
+    this.logger.log(`ZEGO token issued live=${liveId} user=${zegoUserId} role=${cacheRole}`);
+    return result;
   }
 
-  async generateAudienceToken(channelName: string) {
-    if (!/^live_[A-Za-z0-9_-]+$/.test(channelName)) {
-      throw new BadRequestException('Invalid live channel');
+  async generateAudienceToken(channelName: string, userId: string) {
+    const liveId = this.sanitizeZegoId(channelName);
+    if (!liveId || liveId.length < 3) {
+      throw new BadRequestException('Invalid live room');
     }
-
-    const firestore = this.firebaseService.getFirestore();
-    const snapshot = await firestore
-      .collection('live_sessions')
-      .where('agoraChannel', '==', channelName)
-      .limit(1)
-      .get();
-    const session = snapshot.docs[0]?.data();
-
-    if (!session || session.isLive !== true || session.endedAt != null) {
-      throw new NotFoundException('Live stream is no longer active');
-    }
-
-    return this.generateToken({
-      channelName,
-      userId: `audience-${uuidv4()}`,
+    const issued = await this.generateToken({
+      channelName: liveId,
+      userId,
       isHost: false,
     });
+    const { appSign: _effectsAppSign, ...audience } = issued;
+    return audience;
   }
 
   /**
