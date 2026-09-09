@@ -4,11 +4,20 @@ import {
   Post,
   Param,
   Query,
+  Body,
+  Request,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   Headers,
   DefaultValuePipe,
   ParseIntPipe,
+  BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { ShopService } from './shop.service';
 import { ShopRecommendationsService } from './shop-recommendations.service';
 import { AuthGuard } from '../auth/guards/auth.guard';
@@ -24,13 +33,95 @@ export class ShopController {
   ) {}
 
   /**
+   * POST /v1/shop/upload-image
+   * Product photos and shop logos → R2 (`shop/logos/…`, `shop/products/…`).
+   */
+  @Post('upload-image')
+  @UseGuards(AuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: '/tmp/whapvibez-uploads',
+        filename: (_req, file, cb) => cb(null, `${uuidv4()}${extname(file.originalname)}`),
+      }),
+      limits: { fileSize: 20 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) {
+          cb(null, true);
+        } else {
+          cb(new BadRequestException('Only image files are allowed'), false);
+        }
+      },
+    }),
+  )
+  async uploadImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { kind?: string; shopId?: string; productId?: string },
+    @Request() req: any,
+  ) {
+    if (!file) throw new BadRequestException('No image file provided');
+    const userId: string = req.user?.sub || req.userId;
+    if (!userId) throw new BadRequestException('User not authenticated');
+
+    const url = await this.shopService.uploadImage({
+      userId,
+      filePath: file.path,
+      mimeType: file.mimetype,
+      kind: body?.kind,
+      shopId: body?.shopId,
+      productId: body?.productId,
+    });
+    return { url };
+  }
+
+  /**
+   * POST /v1/shop/upload-video
+   * Product video → R2 (`shop/videos/…`). Does not create a reel.
+   */
+  @Post('upload-video')
+  @UseGuards(AuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: diskStorage({
+        destination: '/tmp/whapvibez-uploads',
+        filename: (_req, file, cb) => cb(null, `${uuidv4()}${extname(file.originalname)}`),
+      }),
+      limits: { fileSize: 150 * 1024 * 1024 },
+      fileFilter: (_req, file, cb) => {
+        if (file.mimetype.startsWith('video/')) {
+          cb(null, true);
+        } else {
+          cb(new BadRequestException('Only video files are allowed'), false);
+        }
+      },
+    }),
+  )
+  async uploadVideo(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: { shopId?: string; productId?: string },
+    @Request() req: any,
+  ) {
+    if (!file) throw new BadRequestException('No video file provided');
+    const userId: string = req.user?.sub || req.userId;
+    if (!userId) throw new BadRequestException('User not authenticated');
+
+    return this.shopService.uploadVideo({
+      userId,
+      filePath: file.path,
+      mimeType: file.mimetype,
+      shopId: body?.shopId,
+      productId: body?.productId,
+    });
+  }
+
+  /**
    * GET /v1/shop/shops
    * Get shops with optional filtering (cached with Redis)
    */
   @Get('shops')
   async getShops(
-    @Query('limit') limit: number = 20,
-    @Query('offset') offset: number = 0,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
     @Query('category') category?: string,
   ) {
     const shops = await this.shopService.getShops({
@@ -56,8 +147,8 @@ export class ShopController {
    */
   @Get('products')
   async getProducts(
-    @Query('limit') limit: number = 20,
-    @Query('offset') offset: number = 0,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
     @Query('category') category?: string,
     @Query('sellerId') sellerId?: string,
   ) {
@@ -197,4 +288,3 @@ export class ShopController {
     };
   }
 }
-

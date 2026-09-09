@@ -336,7 +336,9 @@ export class SupabaseService implements OnModuleInit {
     const visibleOwnedCommunities = (ownedCommunities || []).filter(
       (community: any) => !bannedIds.has(community.id),
     );
-    const ownedIds = visibleOwnedCommunities.map((community: any) => community.id);
+    const ownedIds = visibleOwnedCommunities.map(
+      (community: any) => community.id,
+    );
     const communityIds = Array.from(new Set([...membershipIds, ...ownedIds]));
 
     if (communityIds.length === 0) {
@@ -505,10 +507,25 @@ export class SupabaseService implements OnModuleInit {
   private normalizePostMedia(post: any) {
     const normalized = { ...post };
     const imageUrls: string[] = [];
+    const isNonImageMediaUrl = (value: any) => {
+      if (typeof value !== "string") return true;
+      const lower = value.trim().toLowerCase();
+      return (
+        lower.includes(".m3u8") ||
+        lower.includes("mpegurl") ||
+        lower.endsWith(".mp4") ||
+        lower.includes(".mp4?") ||
+        lower.endsWith(".mov") ||
+        lower.includes(".mov?") ||
+        lower.endsWith(".webm") ||
+        lower.includes(".webm?")
+      );
+    };
     const appendIfUrl = (value: any) => {
       if (typeof value !== "string") return;
       const trimmed = value.trim();
       if (!trimmed) return;
+      if (isNonImageMediaUrl(trimmed)) return;
       if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
         imageUrls.push(trimmed);
       }
@@ -520,7 +537,13 @@ export class SupabaseService implements OnModuleInit {
         return;
       }
       if (typeof value === "object") {
-        appendIfUrl(value?.url ?? value?.src ?? value?.path);
+        appendIfUrl(
+          value?.url ??
+            value?.src ??
+            value?.path ??
+            value?.image_url ??
+            value?.media_url,
+        );
         return;
       }
       if (typeof value === "string") {
@@ -544,12 +567,26 @@ export class SupabaseService implements OnModuleInit {
     appendIfUrl(post?.image_url);
     appendIfUrl(post?.media_url);
 
-    normalized.image_urls = Array.from(new Set(imageUrls));
-
     const currentThumb =
       typeof normalized.thumbnail_url === "string"
         ? normalized.thumbnail_url.trim()
         : "";
+    const hasVideoMedia =
+      Boolean(normalized.faststart_url) ||
+      Boolean(normalized.stream_uid) ||
+      Boolean(normalized.video_path) ||
+      (typeof normalized.video_url === "string" &&
+        normalized.video_url.trim().length > 0 &&
+        isNonImageMediaUrl(normalized.video_url));
+    if (!hasVideoMedia && currentThumb && !isNonImageMediaUrl(currentThumb)) {
+      imageUrls.push(currentThumb);
+    }
+
+    normalized.image_urls = Array.from(new Set(imageUrls));
+    if (!hasVideoMedia && normalized.image_urls.length > 0) {
+      normalized.post_type = "image";
+    }
+
     if (!currentThumb) {
       if (normalized.post_type === "video") {
         const videoThumb =
@@ -612,10 +649,11 @@ export class SupabaseService implements OnModuleInit {
       }
 
       if (!pickedCreatorId) {
-        pickedCreatorId = creatorOrder.find((creatorId) => {
-          const bucket = buckets.get(creatorId);
-          return bucket && bucket.length > 0;
-        }) || null;
+        pickedCreatorId =
+          creatorOrder.find((creatorId) => {
+            const bucket = buckets.get(creatorId);
+            return bucket && bucket.length > 0;
+          }) || null;
       }
 
       if (!pickedCreatorId) break;
@@ -807,8 +845,10 @@ export class SupabaseService implements OnModuleInit {
    * Exclude in-flight / failed encodes from public feeds.
    * Legacy Stream posts may have null processing_status.
    */
-  private applyPlayableVideoFilter<T extends { or: (...args: any[]) => T }>(query: T): T {
-    return query.or('processing_status.is.null,processing_status.eq.completed');
+  private applyPlayableVideoFilter<T extends { or: (...args: any[]) => T }>(
+    query: T,
+  ): T {
+    return query.or("processing_status.is.null,processing_status.eq.completed");
   }
 
   /**
@@ -863,10 +903,16 @@ export class SupabaseService implements OnModuleInit {
     ]);
 
     if (viewsResult.error) {
-      console.warn("Reels ranking: post_views fetch failed:", viewsResult.error.message);
+      console.warn(
+        "Reels ranking: post_views fetch failed:",
+        viewsResult.error.message,
+      );
     }
     if (likesResult.error) {
-      console.warn("Reels ranking: post_likes fetch failed:", likesResult.error.message);
+      console.warn(
+        "Reels ranking: post_likes fetch failed:",
+        likesResult.error.message,
+      );
     }
 
     const viewedPostIds = [
@@ -912,47 +958,54 @@ export class SupabaseService implements OnModuleInit {
         Date.now() - 30 * 24 * 60 * 60 * 1000,
       ).toISOString();
 
-      const [
-        interestsRes,
-        viewsRes,
-        likesRes,
-        savesRes,
-        watchRes,
-      ] = await Promise.all([
-        this.client
-          .from('user_interests')
-          .select('interest_id')
-          .eq('user_id', userId),
-        this.client
-          .from('post_views')
-          .select('post_id, posts(caption, description, hashtags, location_name)')
-          .eq('user_id', userId)
-          .gte('viewed_at', thirtyDaysAgo)
-          .order('viewed_at', { ascending: false })
-          .limit(40),
-        this.client
-          .from('post_likes')
-          .select('post_id, posts(caption, description, hashtags, location_name)')
-          .eq('user_id', userId)
-          .limit(25),
-        this.client
-          .from('post_saves')
-          .select('post_id, posts(caption, description, hashtags, location_name)')
-          .eq('user_id', userId)
-          .limit(20),
-        this.client
-          .from('reel_watch_events')
-          .select('post_id, watched_ms, duration_ms, completed, posts(caption, description)')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false })
-          .limit(80),
-      ]);
+      const [interestsRes, viewsRes, likesRes, savesRes, watchRes] =
+        await Promise.all([
+          this.client
+            .from("user_interests")
+            .select("interest_id")
+            .eq("user_id", userId),
+          this.client
+            .from("post_views")
+            .select(
+              "post_id, posts(caption, description, hashtags, location_name)",
+            )
+            .eq("user_id", userId)
+            .gte("viewed_at", thirtyDaysAgo)
+            .order("viewed_at", { ascending: false })
+            .limit(40),
+          this.client
+            .from("post_likes")
+            .select(
+              "post_id, posts(caption, description, hashtags, location_name)",
+            )
+            .eq("user_id", userId)
+            .limit(25),
+          this.client
+            .from("post_saves")
+            .select(
+              "post_id, posts(caption, description, hashtags, location_name)",
+            )
+            .eq("user_id", userId)
+            .limit(20),
+          this.client
+            .from("reel_watch_events")
+            .select(
+              "post_id, watched_ms, duration_ms, completed, posts(caption, description)",
+            )
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(80),
+        ]);
 
       const captionFromPost = (post: any): string | null => {
         if (!post) return null;
-        const caption = (post.caption ?? post.description ?? '').toString().trim();
+        const caption = (post.caption ?? post.description ?? "")
+          .toString()
+          .trim();
         if (caption) return caption.slice(0, 160);
-        const tags = Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '';
+        const tags = Array.isArray(post.hashtags)
+          ? post.hashtags.join(" ")
+          : "";
         return tags ? tags.slice(0, 160) : null;
       };
 
@@ -1015,7 +1068,7 @@ export class SupabaseService implements OnModuleInit {
     completed: boolean;
   }): Promise<void> {
     try {
-      await this.client.from('reel_watch_events').insert({
+      await this.client.from("reel_watch_events").insert({
         user_id: input.userId,
         post_id: input.postId,
         watched_ms: Math.max(0, Math.round(input.watchedMs)),
@@ -1029,11 +1082,11 @@ export class SupabaseService implements OnModuleInit {
 
   async getPostForAiCaption(postId: string) {
     const { data, error } = await this.client
-      .from('posts')
+      .from("posts")
       .select(
-        'id, user_id, caption, description, hashtags, location_name, users(username)',
+        "id, user_id, caption, description, hashtags, location_name, users(username)",
       )
-      .eq('id', postId)
+      .eq("id", postId)
       .maybeSingle();
 
     if (error) throw error;
@@ -1047,9 +1100,9 @@ export class SupabaseService implements OnModuleInit {
     hashtags: string[],
   ): Promise<boolean> {
     const { data: existing, error: readError } = await this.client
-      .from('posts')
-      .select('id, user_id')
-      .eq('id', postId)
+      .from("posts")
+      .select("id, user_id")
+      .eq("id", postId)
       .maybeSingle();
 
     if (readError || !existing || existing.user_id?.toString() !== userId) {
@@ -1057,14 +1110,14 @@ export class SupabaseService implements OnModuleInit {
     }
 
     const { error } = await this.client
-      .from('posts')
+      .from("posts")
       .update({
         caption,
         hashtags,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', postId)
-      .eq('user_id', userId);
+      .eq("id", postId)
+      .eq("user_id", userId);
 
     return !error;
   }
@@ -1082,20 +1135,26 @@ export class SupabaseService implements OnModuleInit {
       .eq("is_public", true)
       .eq("is_draft", false);
     query = this.applyPlayableVideoFilter(query);
-    if (options?.storageType) {
-      query = query.eq("storage_type", options.storageType);
-      if (options.storageType === "r2") {
-        query = query.not("video_url", "is", null);
-      }
-    }
-    query = query
-      .or(
-        [
+    const requestedStorageType =
+      options?.storageType === "r2" ? options.storageType : undefined;
+    const videoMediaFilter = requestedStorageType
+      ? [
+          `and(post_type.eq.video,storage_type.eq.${requestedStorageType})`,
+          `and(video_url.not.is.null,storage_type.eq.${requestedStorageType})`,
+          `and(video_path.not.is.null,storage_type.eq.${requestedStorageType})`,
+          `and(stream_uid.not.is.null,storage_type.eq.${requestedStorageType})`,
+        ]
+      : [
           "post_type.eq.video",
-          "post_type.eq.image",
           "video_url.not.is.null",
           "video_path.not.is.null",
           "stream_uid.not.is.null",
+        ];
+    query = query
+      .or(
+        [
+          ...videoMediaFilter,
+          "post_type.eq.image",
           "image_urls.not.is.null",
         ].join(","),
       )
@@ -1430,16 +1489,9 @@ export class SupabaseService implements OnModuleInit {
       query = query.eq("user_id", options.sellerId);
     }
 
-    if (options.limit) {
-      query = query.limit(options.limit);
-    }
-
-    if (options.offset) {
-      query = query.range(
-        options.offset,
-        options.offset + (options.limit || 20) - 1,
-      );
-    }
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+    query = query.range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -1467,9 +1519,9 @@ export class SupabaseService implements OnModuleInit {
 
   async getUserInterestIds(userId: string): Promise<string[]> {
     const { data, error } = await this.client
-      .from('user_interests')
-      .select('interest_id')
-      .eq('user_id', userId);
+      .from("user_interests")
+      .select("interest_id")
+      .eq("user_id", userId);
 
     if (error) throw error;
     return (data || [])
@@ -1487,7 +1539,7 @@ export class SupabaseService implements OnModuleInit {
     if (!product?.id) return null;
     return {
       id: product.id,
-      name: product.name?.toString() ?? 'Product',
+      name: product.name?.toString() ?? "Product",
       category: product.category?.toString() ?? null,
       price: product.price != null ? Number(product.price) : null,
     };
@@ -1549,30 +1601,32 @@ export class SupabaseService implements OnModuleInit {
     try {
       const [viewsRes, cartRes, likesRes, ordersRes] = await Promise.all([
         this.client
-          .from('user_product_views')
-          .select('product_id, last_viewed_at, products(id, name, category, price)')
-          .eq('user_id', userId)
-          .order('last_viewed_at', { ascending: false })
+          .from("user_product_views")
+          .select(
+            "product_id, last_viewed_at, products(id, name, category, price)",
+          )
+          .eq("user_id", userId)
+          .order("last_viewed_at", { ascending: false })
           .limit(15),
         this.client
-          .from('cart_items')
-          .select('product_id, products(id, name, category, price)')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false })
+          .from("cart_items")
+          .select("product_id, products(id, name, category, price)")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
           .limit(10),
         this.client
-          .from('product_likes')
-          .select('product_id, products(id, name, category, price)')
-          .eq('user_id', userId)
+          .from("product_likes")
+          .select("product_id, products(id, name, category, price)")
+          .eq("user_id", userId)
           .limit(10),
         this.client
-          .from('orders')
+          .from("orders")
           .select(
-            'id, status, created_at, order_items(product_id, products(id, name, category, price))',
+            "id, status, created_at, order_items(product_id, products(id, name, category, price))",
           )
-          .eq('buyer_id', userId)
-          .not('status', 'eq', 'cancelled')
-          .order('created_at', { ascending: false })
+          .eq("buyer_id", userId)
+          .not("status", "eq", "cancelled")
+          .order("created_at", { ascending: false })
           .limit(8),
       ]);
 
@@ -1605,38 +1659,41 @@ export class SupabaseService implements OnModuleInit {
     }
   }
 
-  async recordUserProductView(userId: string, productId: string): Promise<void> {
+  async recordUserProductView(
+    userId: string,
+    productId: string,
+  ): Promise<void> {
     const { data: product } = await this.client
-      .from('products')
-      .select('views_count')
-      .eq('id', productId)
+      .from("products")
+      .select("views_count")
+      .eq("id", productId)
       .maybeSingle();
 
     if (product) {
       await this.client
-        .from('products')
+        .from("products")
         .update({ views_count: (product.views_count ?? 0) + 1 })
-        .eq('id', productId);
+        .eq("id", productId);
     }
 
     try {
       const { data: existing } = await this.client
-        .from('user_product_views')
-        .select('id, view_count')
-        .eq('user_id', userId)
-        .eq('product_id', productId)
+        .from("user_product_views")
+        .select("id, view_count")
+        .eq("user_id", userId)
+        .eq("product_id", productId)
         .maybeSingle();
 
       if (existing) {
         await this.client
-          .from('user_product_views')
+          .from("user_product_views")
           .update({
             view_count: (existing.view_count ?? 0) + 1,
             last_viewed_at: new Date().toISOString(),
           })
-          .eq('id', existing.id);
+          .eq("id", existing.id);
       } else {
-        await this.client.from('user_product_views').insert({
+        await this.client.from("user_product_views").insert({
           user_id: userId,
           product_id: productId,
           view_count: 1,
@@ -1647,14 +1704,16 @@ export class SupabaseService implements OnModuleInit {
     }
   }
 
-  async getProductRecommendationPool(options: {
-    limit?: number;
-    category?: string;
-  } = {}) {
+  async getProductRecommendationPool(
+    options: {
+      limit?: number;
+      category?: string;
+    } = {},
+  ) {
     const limit = Math.min(Math.max(options.limit ?? 60, 1), 120);
 
     let query = this.client
-      .from('products')
+      .from("products")
       .select(
         `
         *,
@@ -1662,13 +1721,13 @@ export class SupabaseService implements OnModuleInit {
         users:user_id(id, username, full_name, profile_image_url, is_verified)
       `,
       )
-      .eq('is_active', true)
-      .gt('quantity', 0)
-      .order('sold_count', { ascending: false })
+      .eq("is_active", true)
+      .gt("quantity", 0)
+      .order("sold_count", { ascending: false })
       .limit(limit);
 
     if (options.category) {
-      query = query.eq('category', options.category);
+      query = query.eq("category", options.category);
     }
 
     const { data, error } = await query;
@@ -1677,7 +1736,7 @@ export class SupabaseService implements OnModuleInit {
     return (data || []).filter(
       (product: any) =>
         product.shops != null &&
-        (typeof product.shops === 'object' || Array.isArray(product.shops)),
+        (typeof product.shops === "object" || Array.isArray(product.shops)),
     );
   }
 
@@ -1703,16 +1762,9 @@ export class SupabaseService implements OnModuleInit {
       query = query.eq("category", options.category);
     }
 
-    if (options.limit) {
-      query = query.limit(options.limit);
-    }
-
-    if (options.offset) {
-      query = query.range(
-        options.offset,
-        options.offset + (options.limit || 20) - 1,
-      );
-    }
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+    query = query.range(offset, offset + limit - 1);
 
     const { data, error } = await query;
     if (error) throw error;
@@ -1746,15 +1798,14 @@ export class SupabaseService implements OnModuleInit {
 
   async getCartItemCount(userId: string): Promise<number> {
     const { data, error } = await this.client
-      .from('cart_items')
-      .select('quantity')
-      .eq('user_id', userId);
+      .from("cart_items")
+      .select("quantity")
+      .eq("user_id", userId);
 
     if (error) throw error;
 
     return (data || []).reduce(
-      (sum: number, row: { quantity?: number }) =>
-        sum + (row.quantity ?? 0),
+      (sum: number, row: { quantity?: number }) => sum + (row.quantity ?? 0),
       0,
     );
   }
