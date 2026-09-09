@@ -489,7 +489,16 @@ export class LiveService {
     channelName: string;
     userId: string;
     isHost: boolean;
-  }) {
+  }): Promise<{
+    token: string;
+    appId: number;
+    liveID: string;
+    userID: string;
+    expireSeconds: number;
+    role: string;
+    channelName: string;
+    appSign?: string;
+  }> {
     const isHost = data.isHost === true;
     const liveId = this.sanitizeZegoId(data.channelName);
     const zegoUserId = this.sanitizeZegoId(data.userId);
@@ -505,13 +514,32 @@ export class LiveService {
         liveID: string;
         userID: string;
         expireSeconds: number;
+        role?: string;
+        channelName?: string;
       }>(cacheKey);
       if (cached?.token) {
         this.logger.debug(`ZEGO token cache hit ${liveId} ${cacheRole}`);
         const effectsAppSign = this.zegoService.getAppSign();
-        return effectsAppSign
-          ? { ...cached, appSign: effectsAppSign }
-          : cached;
+        const hit: {
+          token: string;
+          appId: number;
+          liveID: string;
+          userID: string;
+          expireSeconds: number;
+          role: string;
+          channelName: string;
+          appSign?: string;
+        } = {
+          token: cached.token,
+          appId: cached.appId,
+          liveID: cached.liveID,
+          userID: cached.userID,
+          expireSeconds: cached.expireSeconds,
+          role: cached.role ?? cacheRole,
+          channelName: cached.channelName ?? liveId,
+        };
+        if (effectsAppSign) hit.appSign = effectsAppSign;
+        return hit;
       }
     } catch {
       // Redis unavailable
